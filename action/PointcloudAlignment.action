@@ -1,0 +1,12 @@
+#goal definition
+int32 command
+sensor_msgs/PointCloud2 source_pointcloud
+sensor_msgs/PointCloud2 target_pointcloud
+geometry_msgs/PoseStamped initial_pose
+---
+#result definition
+geometry_msgs/PoseStamped transformation_pose
+---
+#feedback
+float32 aligned_percentage
+float32 normalized_error
