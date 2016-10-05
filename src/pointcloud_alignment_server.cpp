@@ -77,6 +77,8 @@ static const int MIN_PLANE_PORTION = 0.2;
 static const float MIN_PLANE_DISTANCE = 0.01;
 static const float MIN_SCALING_FACTOR = 0.8;
 static const float MAX_SCALING_FACTOR = 1.2;
+static float MAX_TIME = 1.2;
+int MAX_DEPTH = 2;
 
 static pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
@@ -173,8 +175,8 @@ public:
         if (command == 0) { // execute local icp
             cout<<"executing local icp"<<endl;
 
-            MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
-            MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
+            MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
+            MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
             createKdTree(target_subcloud);
 
             return  local_pointcloud_alignment(source_subclouds, target_pointcloud , R_icp, t_icp, s_icp);
@@ -189,15 +191,12 @@ public:
     }
 
     float global_pointcloud_alignment(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
-        float maxTime = 1.2;
-        int maxDepth = 2;
-
 
         struct timeval start;
         gettimeofday(&start, NULL);
 
         int queueLength;
-        Cube **Q = createPriorityQueue(maxDepth, queueLength);
+        Cube **Q = createPriorityQueue(queueLength);
 
         MatrixXf R_init = R;
         VectorXf t_init = t;
@@ -214,7 +213,7 @@ public:
         #pragma omp parallel for shared(cur_err, R, t, s)
         for (int i = 0; i < queueLength; i++) {
 
-            if (i != 0 && getPassedTime(start) > maxTime) {
+            if (i != 0 && getPassedTime(start) > MAX_TIME) {
                 continue;
             }
 
@@ -224,7 +223,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = ((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols());
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_subcloud, R_i, t_i, s_i);
@@ -257,7 +256,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = ((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols());
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
@@ -274,17 +273,27 @@ public:
         }
 
         // execute final local icp iteration with more points for more accuracy
-        source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
+        /*source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
         target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE); // TODO: andere variable verwenden
-        createKdTree(target_subcloud);
+        createKdTree(target_subcloud);*/
 
-        local_pointcloud_alignment(source_subclouds, target_subcloud, R, t, s);
+        /*MatrixXf R_i = R;
+        VectorXf t_i = t;
+        float s_i = s;
+        local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-        cur_err = weightedError(source_pointcloud, target_pointcloud, R, t, s);
+        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
 
-        float percentage = ((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols());
+        if (percentage > max_percentage) {
+            cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
+            max_percentage = percentage;
 
-        sendFeedback(percentage, cur_err);
+            R = R_i;
+            t = t_i;
+            s = s_i;
+
+            sendFeedback(max_percentage, cur_err);
+        }*/
 
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<endl;
         return cur_err;
@@ -573,19 +582,19 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
         return permutation;
     }
 
-    Cube **createPriorityQueue(int maxDepth, int &queueLength) {
+    Cube **createPriorityQueue(int &queueLength) {
         PriorityQueue *Q = createQueue();
 
         VectorXf r0_init(3);
         r0_init<<0,0,0;
         Cube *C_init = createCube(r0_init, M_PI, 0);
 
-        fillPriorityQueue(Q, C_init, 0, maxDepth);
+        fillPriorityQueue(Q, C_init, 0, MAX_DEPTH);
         int nCubes = length(Q);
         Cube **priorityQueue = new Cube *[nCubes];
         int depth = 0;
         int startPos = 0;
-        while (depth <= maxDepth) {
+        while (depth <= MAX_DEPTH) {
             int ct = depthNumber(Q, depth++);
             int *offset = getPermutation(0, ct-1);
 
@@ -602,18 +611,18 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
     }
 
 
-    void fillPriorityQueue(PriorityQueue *Q, Cube *cube, int curDepth, int maxDepth) {
+    void fillPriorityQueue(PriorityQueue *Q, Cube *cube, int curDepth, int MAX_DEPTH) {
         float vecLength = sqrt(cube->r0[0]*cube->r0[0] + cube->r0[1]*cube->r0[1] + cube->r0[2]*cube->r0[2]);
 
         if (vecLength < M_PI) {
             insert(Q, cube);
         }
 
-        if (curDepth < maxDepth) {
+        if (curDepth < MAX_DEPTH) {
             Cube **subcubes = splitCube(cube);
 
             for (int i = 0; i < 8; i++) {
-                fillPriorityQueue(Q, subcubes[i], curDepth + 1, maxDepth);
+                fillPriorityQueue(Q, subcubes[i], curDepth + 1, MAX_DEPTH);
             }
         }
     }
