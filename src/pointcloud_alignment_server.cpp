@@ -1,7 +1,7 @@
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <actionlib/server/simple_action_server.h>
-#include <object_template_alignment_plugin/PointcloudAlignmentAction.h>
+#include <object_template_alignment_server/PointcloudAlignmentAction.h>
 #include <geometry_msgs/PoseStamped.h>
 
 #include <string>
@@ -88,10 +88,10 @@ private:
 
 protected:
     ros::NodeHandle nh_;
-    actionlib::SimpleActionServer<object_template_alignment_plugin::PointcloudAlignmentAction> as_;
+    actionlib::SimpleActionServer<object_template_alignment_server::PointcloudAlignmentAction> as_;
     std::string action_name_;
-    object_template_alignment_plugin::PointcloudAlignmentFeedback feedback_;
-    object_template_alignment_plugin::PointcloudAlignmentResult result_;
+    object_template_alignment_server::PointcloudAlignmentFeedback feedback_;
+    object_template_alignment_server::PointcloudAlignmentResult result_;
 
 public:
     PointcloudAlignmentAction(std::string name) :
@@ -102,7 +102,7 @@ public:
 
     ~PointcloudAlignmentAction(void) {}
 
-    void executeCB(const object_template_alignment_plugin::PointcloudAlignmentGoalConstPtr &goal) {
+    void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
 
         // preprocess pointcloud data
         float max_radius;
