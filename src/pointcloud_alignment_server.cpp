@@ -175,11 +175,11 @@ public:
         if (command == 0) { // execute local icp
             cout<<"executing local icp"<<endl;
 
-            MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
-            MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
+            MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
+            MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
             createKdTree(target_subcloud);
 
-            return  local_pointcloud_alignment(source_subclouds, target_pointcloud , R_icp, t_icp, s_icp);
+            return  local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
         } else  if (command == 1) { // execute global pointcloud alignment
             cout<<"executing global icp"<<endl;
             return global_pointcloud_alignment(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
@@ -223,7 +223,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_subcloud, R_i, t_i, s_i);
@@ -256,7 +256,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
@@ -273,16 +273,16 @@ public:
         }
 
         // execute final local icp iteration with more points for more accuracy
-        /*source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
+        source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
         target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE); // TODO: andere variable verwenden
-        createKdTree(target_subcloud);*/
+        createKdTree(target_subcloud);
 
-        /*MatrixXf R_i = R;
+        MatrixXf R_i = R;
         VectorXf t_i = t;
         float s_i = s;
         local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R, t, s)) / ((float) source_pointcloud.cols()))*100.;
+        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
 
         if (percentage > max_percentage) {
             cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
@@ -293,7 +293,7 @@ public:
             s = s_i;
 
             sendFeedback(max_percentage, cur_err);
-        }*/
+        }
 
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<endl;
         return cur_err;
@@ -843,16 +843,17 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
 
         }
 
+
         MatrixXf target_pointcloud = MatrixXf(3,target_size);
 
         int pos = 0;
-        for (int i = 0; i < target_size; i++) {
+        for (int i = 0; i < pointcloud_target->size(); i++) {
             float dist = sqrt(pow(pointcloud_target->at(i).x - initial_pose.pose.position.x,2) +
                               pow(pointcloud_target->at(i).y - initial_pose.pose.position.y,2) +
                               pow(pointcloud_target->at(i).z - initial_pose.pose.position.z,2));
 
 
-            if (dist < TARGET_RADIUS_FACTOR*max_radius) {
+            if (dist < TARGET_RADIUS_FACTOR*max_radius && pos < target_size) {
                 target_pointcloud(0,pos) = pointcloud_target->at(i).x;
                 target_pointcloud(1,pos) = pointcloud_target->at(i).y;
                 target_pointcloud(2,pos) = pointcloud_target->at(i).z;
