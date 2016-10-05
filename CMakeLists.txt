@@ -12,8 +12,6 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   sensor_msgs
   geometry_msgs
-  vigir_object_template_msgs
-  vigir_ocs_msgs
   pcl_ros
 )
 
@@ -106,7 +104,7 @@ generate_messages(
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  CATKIN_DEPENDS actionlib actionlib_msgs message_generation roscpp rospy std_msgs pcl_ros vigir_object_template_msgs vigir_ocs_msgs
+  CATKIN_DEPENDS actionlib actionlib_msgs message_generation roscpp rospy std_msgs pcl_ros
 )
 
 ###########
