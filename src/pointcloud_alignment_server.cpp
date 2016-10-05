@@ -15,8 +15,6 @@
 #include <eigen3/Eigen/SVD>
 
 #include <sensor_msgs/PointCloud2.h>
-#include <vigir_object_template_msgs/TemplateServerList.h>
-#include <vigir_ocs_msgs/OCSObjectSelection.h>
 
 #include <pcl_ros/point_cloud.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -30,8 +28,6 @@
 #include <vector>
 #include <algorithm>
 #include <float.h>
-
-#include <vigir_object_template_msgs/SetAlignObjectTemplate.h>
 
 #include <pcl/kdtree/kdtree.h>
 #include <pcl/kdtree/kdtree_flann.h>
