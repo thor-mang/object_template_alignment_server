@@ -9,7 +9,8 @@
 #include <stdlib.h>
 #include <fstream>
 #include <float.h>
-
+#include <vector>
+#include <algorithm>
 
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/SVD>
@@ -23,12 +24,6 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types_conversion.h>
 
-#include <pthread.h>
-#include <omp.h>
-#include <vector>
-#include <algorithm>
-#include <float.h>
-
 #include <pcl/kdtree/kdtree.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
@@ -37,6 +32,7 @@
 #include <pcl/segmentation/sac_segmentation.h>
 
 #include <omp.h>
+#include <pthread.h>
 
 
 using namespace Eigen;
@@ -73,11 +69,12 @@ static const int MIN_PLANE_PORTION = 0.2;
 static const float MIN_PLANE_DISTANCE = 0.01;
 static const float MIN_SCALING_FACTOR = 0.8;
 static const float MAX_SCALING_FACTOR = 1.2;
-static float MAX_TIME = 1.2;
-static int MAX_DEPTH = 2;
-static float ICP_EPS = 1e-7;
-int MAX_ICP_IT = 300;
-float ICP_EPS2 = 0.1;
+static const float MAX_TIME = 1.2;
+static const int MAX_DEPTH = 2;
+static const float ICP_EPS = 1e-7;
+static const int MAX_ICP_IT = 300;
+static const float ICP_EPS2 = 0.1;
+static const float MAX_NUMERICAL_ERROR = 1e-4;
 
 static pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
@@ -101,9 +98,25 @@ public:
 
     ~PointcloudAlignmentAction(void) {}
 
+    template<typename Type>
+    Type getParameter(string parameter_name) {
+        string key;
+        if (nh_.searchParam(parameter_name, key) == true) {
+          Type val;
+          nh_.getParam(key, val);
+          ROS_ERROR("parameter %s not found has value %f", parameter_name, val);
+
+          return val;
+        } else {
+            ROS_ERROR("parameter %s not found", parameter_name);
+
+            return 0;
+        }
+    }
+
     void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
 
-        std::string key;
+        /*std::string key;
         if (nh_.searchParam("distance_threshold", key))
         {
           float val;
@@ -111,7 +124,7 @@ public:
           cout<<"val: "<<val<<endl;
         } else {
             cout<<"distance threshold not found"<<endl;
-        }
+        }*/
 
 
 
@@ -129,7 +142,7 @@ public:
 
         // convert initial_pose structure to transformation parameters
         MatrixXf R_icp = MatrixXf(3,3);
-        float qx = goal->initial_pose.pose.orientation.x;
+        float qx = goal->initial_pose.pose.orientation.x; // TODO: in Funktion auslagern
         float qy = goal->initial_pose.pose.orientation.y;
         float qz = goal->initial_pose.pose.orientation.z;
         float qw = goal->initial_pose.pose.orientation.w;
@@ -141,6 +154,10 @@ public:
         VectorXf t_icp(3);
         t_icp << goal->initial_pose.pose.position.x, goal->initial_pose.pose.position.y, goal->initial_pose.pose.position.z;
         float s_icp = 1.;
+
+        MatrixXf R_init = R_icp;
+        VectorXf t_init = t_icp;
+        float s_init = 1;
 
 
         // execute the pointcloud alignment algorithm
@@ -155,9 +172,11 @@ public:
         position.y = t_icp(1);
         position.z = t_icp(2);
 
-        if (R_icp(0,0) + R_icp(1,1) + R_icp(2,2) == 0) {
-            ROS_ERROR("Received invalid Rotation matrix!");
-            as_.setAborted();
+        if (rotationIsValid(R_icp) == false || R_icp(0,0) + R_icp(1,1) + R_icp(2,2) == 0) {
+            ROS_ERROR("Received invalid Rotation matrix! Returning initial pose.");
+            R_icp = R_init;
+            t_icp = t_init;
+            s_icp = s_init;
         }
 
         orientation.w = sqrt(1. + R_icp(0,0) + R_icp(1,1) + R_icp(2,2)) / 2.;
@@ -203,7 +222,6 @@ public:
 
     float global_pointcloud_alignment(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
-
         struct timeval start;
         gettimeofday(&start, NULL);
 
@@ -237,7 +255,7 @@ public:
 
             float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
 
-            if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
+            if (percentage > max_percentage && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_subcloud, R_i, t_i, s_i);
                 max_percentage = percentage;
 
@@ -994,6 +1012,13 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
         }
 
         file.close();
+    }
+
+    bool rotationIsValid(MatrixXf R) {
+        if ((R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
+            return false;
+        }
+        return true;
     }
 
 };
