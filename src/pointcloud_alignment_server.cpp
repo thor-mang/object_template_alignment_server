@@ -74,7 +74,10 @@ static const float MIN_PLANE_DISTANCE = 0.01;
 static const float MIN_SCALING_FACTOR = 0.8;
 static const float MAX_SCALING_FACTOR = 1.2;
 static float MAX_TIME = 1.2;
-int MAX_DEPTH = 2;
+static int MAX_DEPTH = 2;
+static float ICP_EPS = 1e-7;
+int MAX_ICP_IT = 300;
+float ICP_EPS2 = 0.1;
 
 static pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
@@ -99,6 +102,18 @@ public:
     ~PointcloudAlignmentAction(void) {}
 
     void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
+
+        std::string key;
+        if (nh_.searchParam("distance_threshold", key))
+        {
+          float val;
+          nh_.getParam(key, val);
+          cout<<"val: "<<val<<endl;
+        } else {
+            cout<<"distance threshold not found"<<endl;
+        }
+
+
 
         // preprocess pointcloud data
         float max_radius;
@@ -187,6 +202,7 @@ public:
     }
 
     float global_pointcloud_alignment(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
+
 
         struct timeval start;
         gettimeofday(&start, NULL);
@@ -297,14 +313,11 @@ public:
 
     float local_pointcloud_alignment(MatrixXf *source_subclouds, MatrixXf target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
-        float eps = 1e-7;
-        int maxIt = 300;
-        float err_eps = 0.1;
-
         int source_size = source_subclouds[0].cols();
 
         float err_old;
         int itCt = 0;
+        int source_pos = 0;
 
         MatrixXf correspondences(3, source_size);
         VectorXf distances(source_size);
@@ -314,12 +327,9 @@ public:
         VectorXf t_old(3);
         float s_old;
 
-        int source_pos = 0;
-
         MatrixXf source_cloud = source_subclouds[source_pos];
 
-
-        while(itCt < maxIt) {
+        while(itCt < MAX_ICP_IT) {
 
             source_cloud = source_subclouds[source_pos % NUMBER_SUBCLOUDS];
             itCt++;
@@ -340,12 +350,12 @@ public:
 
             // if the parameters did not change, use different subsample of the source pointcloud
             // if all subsamples have been tried without any effect, quit the loop
-            if ((R-R_old).norm() + (t-t_old).norm() + abs(s-s_old) < eps) {
+            if ((R-R_old).norm() + (t-t_old).norm() + abs(s-s_old) < ICP_EPS) {
                 if (source_pos == 0) {
                     err_old = calc_error(source_cloud, target_pointcloud, R, t, s);
                 } else if (source_pos % 5 == 0) {
                     float err = calc_error(source_cloud, target_pointcloud, R, t, s);
-                    if (abs(err-err_old) < err_eps) {
+                    if (abs(err-err_old) < ICP_EPS2) {
                         break;
                     } else {
                         err_old = err;
