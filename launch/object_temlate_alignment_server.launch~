@@ -1,4 +1,0 @@
-<launch>
-  <rosparam command="load" file="$(find object_template_alignment_server)/config/pointcloud_alignment_parameters.yaml" />
-  <node name="pointcloud_alignment_server" pkg="object_template_alignment_plugin" type="pointcloud_alignment_server" />
-</launch>
