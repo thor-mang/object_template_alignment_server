@@ -106,8 +106,7 @@ public:
         string key;
         if (nh_.searchParam(parameter_name, key) == true) {
           float val;
-          string tmp;
-          nh_.getParam(key, tmp);
+          nh_.getParam(key, val);
 
           ROS_INFO("%s: %f", parameter_name.c_str(), val);
 
