@@ -56,25 +56,7 @@ typedef struct PriorityQueue {
 } PriorityQueue;
 
 
-static const float DISTANCE_THRESHOLD = 0.02;
-static const float MIN_OVERLAPPING_PERCENTAGE = 0.15;
-static const int TARGET_RADIUS_FACTOR = 1.3;
-static const int NUMBER_SUBCLOUDS = 5;
-static const int SIZE_SOURCE = 250;
-static const int SIZE_TARGET = 500;
-static const int REFINEMENT_ICP_SOURCE_SIZE = 500;
-static const int REFINEMENT_ICP_TARGET_SIZE = 2000;
-static const float EVALUATION_THRESHOLD = 0.015;
-static const int MIN_PLANE_PORTION = 0.2;
-static const float MIN_PLANE_DISTANCE = 0.01;
-static const float MIN_SCALING_FACTOR = 0.8;
-static const float MAX_SCALING_FACTOR = 1.2;
-static const float MAX_TIME = 1.2;
-static const int MAX_DEPTH = 2;
-static const float ICP_EPS = 1e-7;
-static const int MAX_ICP_IT = 300;
-static const float ICP_EPS2 = 0.1;
-static const float MAX_NUMERICAL_ERROR = 1e-4;
+
 
 static pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
@@ -90,6 +72,28 @@ protected:
     object_template_alignment_server::PointcloudAlignmentResult result_;
 
 public:
+
+
+    float DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
+    float MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
+    float TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
+    int NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
+    int SIZE_SOURCE = getIntegerParameter("size_source");
+    int SIZE_TARGET = getIntegerParameter("size_target");
+    int REFINEMENT_ICP_SOURCE_SIZE = getIntegerParameter("refinement_icp_source_size");
+    int REFINEMENT_ICP_TARGET_SIZE = getIntegerParameter("refinement_icp_target_size");
+    float EVALUATION_THRESHOLD = getFloatParameter("evaluation_threshold");
+    float MIN_PLANE_PORTION = getFloatParameter("min_plane_portion");
+    float MIN_PLANE_DISTANCE = getFloatParameter("min_plane_distance");
+    float MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
+    float MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
+    float MAX_TIME = getFloatParameter("max_time");
+    int MAX_DEPTH = getIntegerParameter("max_depth");
+    float ICP_EPS = getFloatParameter("icp_eps");
+    int MAX_ICP_IT = getIntegerParameter("max_icp_it");
+    float ICP_EPS2 = getFloatParameter("icp_eps2");
+    float MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
+
     PointcloudAlignmentAction(std::string name) :
     as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
     action_name_(name) {
@@ -98,17 +102,34 @@ public:
 
     ~PointcloudAlignmentAction(void) {}
 
-    template<typename Type>
-    Type getParameter(string parameter_name) {
+    float getFloatParameter(string parameter_name) {
         string key;
         if (nh_.searchParam(parameter_name, key) == true) {
-          Type val;
-          nh_.getParam(key, val);
-          ROS_ERROR("parameter %s not found has value %f", parameter_name, val);
+          float val;
+          string tmp;
+          nh_.getParam(key, tmp);
+
+          ROS_INFO("%s: %f", parameter_name.c_str(), val);
 
           return val;
         } else {
-            ROS_ERROR("parameter %s not found", parameter_name);
+            ROS_ERROR("parameter %s not found", parameter_name.c_str());
+
+            return 0;
+        }
+    }
+
+    int getIntegerParameter(string parameter_name) {
+        string key;
+        if (nh_.searchParam(parameter_name, key) == true) {
+          int val;
+          nh_.getParam(key, val);
+
+          ROS_INFO("%s:%d", parameter_name.c_str(), val);
+
+          return val;
+        } else {
+            ROS_ERROR("parameter %s not found", parameter_name.c_str());
 
             return 0;
         }

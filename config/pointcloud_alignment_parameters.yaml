@@ -2,10 +2,10 @@ distance_threshold: 0.02
 min_overlapping_percentage: 0.15
 target_radius_factor: 1.3
 number_subclouds: 5
-source_size: 250
-target_size: 500
-refinement_source_size: 500
-refinement_target_size: 2000
+size_source: 250
+size_target: 500
+refinement_icp_source_size: 500
+refinement_icp_target_size: 2000
 evaluation_threshold: 0.015
 min_plane_portion: 0.2
 min_plane_distance: 0.01
@@ -13,6 +13,7 @@ min_scaling_factor: 0.8
 max_scaling_factor: 1.2
 max_time: 1.2
 max_depth: 2
-icp_eps: 1e-7
+icp_eps: 1e-5
 max_icp_it: 300
 icp_eps2: 0.1
+max_numerical_error: 1e-5
