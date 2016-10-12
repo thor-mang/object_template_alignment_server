@@ -55,11 +55,6 @@ typedef struct PriorityQueue {
     QueueElement *head;
 } PriorityQueue;
 
-
-
-
-static pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
-
 class PointcloudAlignmentAction
 {
 private:
@@ -73,80 +68,24 @@ protected:
 
 public:
 
+    float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR;
+    int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT;
 
-    float DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
-    float MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
-    float TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
-    int NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
-    int SIZE_SOURCE = getIntegerParameter("size_source");
-    int SIZE_TARGET = getIntegerParameter("size_target");
-    int REFINEMENT_ICP_SOURCE_SIZE = getIntegerParameter("refinement_icp_source_size");
-    int REFINEMENT_ICP_TARGET_SIZE = getIntegerParameter("refinement_icp_target_size");
-    float EVALUATION_THRESHOLD = getFloatParameter("evaluation_threshold");
-    float MIN_PLANE_PORTION = getFloatParameter("min_plane_portion");
-    float MIN_PLANE_DISTANCE = getFloatParameter("min_plane_distance");
-    float MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
-    float MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
-    float MAX_TIME = getFloatParameter("max_time");
-    int MAX_DEPTH = getIntegerParameter("max_depth");
-    float ICP_EPS = getFloatParameter("icp_eps");
-    int MAX_ICP_IT = getIntegerParameter("max_icp_it");
-    float ICP_EPS2 = getFloatParameter("icp_eps2");
-    float MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
+    pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
     PointcloudAlignmentAction(std::string name) :
     as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
     action_name_(name) {
+
+        initializeParameters();
+
         as_.start();
     }
 
     ~PointcloudAlignmentAction(void) {}
 
-    float getFloatParameter(string parameter_name) {
-        string key;
-        if (nh_.searchParam(parameter_name, key) == true) {
-          float val;
-          nh_.getParam(key, val);
-
-          ROS_INFO("%s: %f", parameter_name.c_str(), val);
-
-          return val;
-        } else {
-            ROS_ERROR("parameter %s not found", parameter_name.c_str());
-
-            return 0;
-        }
-    }
-
-    int getIntegerParameter(string parameter_name) {
-        string key;
-        if (nh_.searchParam(parameter_name, key) == true) {
-          int val;
-          nh_.getParam(key, val);
-
-          ROS_INFO("%s:%d", parameter_name.c_str(), val);
-
-          return val;
-        } else {
-            ROS_ERROR("parameter %s not found", parameter_name.c_str());
-
-            return 0;
-        }
-    }
-
-    void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
-
-        /*std::string key;
-        if (nh_.searchParam("distance_threshold", key))
-        {
-          float val;
-          nh_.getParam(key, val);
-          cout<<"val: "<<val<<endl;
-        } else {
-            cout<<"distance threshold not found"<<endl;
-        }*/
-
-
+        void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
 
         // preprocess pointcloud data
         float max_radius;
@@ -162,7 +101,7 @@ public:
 
         // convert initial_pose structure to transformation parameters
         MatrixXf R_icp = MatrixXf(3,3);
-        float qx = goal->initial_pose.pose.orientation.x; // TODO: in Funktion auslagern
+        float qx = goal->initial_pose.pose.orientation.x;
         float qy = goal->initial_pose.pose.orientation.y;
         float qz = goal->initial_pose.pose.orientation.z;
         float qw = goal->initial_pose.pose.orientation.w;
@@ -324,7 +263,7 @@ public:
 
         // execute final local icp iteration with more points for more accuracy
         source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
-        target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE); // TODO: andere variable verwenden
+        target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
         createKdTree(target_subcloud);
 
         MatrixXf R_i = R;
@@ -381,7 +320,7 @@ public:
             find_correspondences(source_proj, target_pointcloud, correspondences, distances);
 
             if (trim_pointcloud(source_cloud, correspondences, distances, source_trimmed, correspondences_trimmed) == false) {
-                return DBL_MAX;
+                return FLT_MAX;
             }
 
             find_transformation(source_trimmed, correspondences_trimmed, R, t, s);
@@ -993,6 +932,67 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
         return err /= ((float) n_points);
     }
 
+    bool rotationIsValid(MatrixXf R) {
+        if (abs(R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
+            return false;
+        }
+        return true;
+    }
+
+    void initializeParameters() {
+        DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
+        MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
+        TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
+        NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
+        SIZE_SOURCE = getIntegerParameter("size_source");
+        SIZE_TARGET = getIntegerParameter("size_target");
+        REFINEMENT_ICP_SOURCE_SIZE = getIntegerParameter("refinement_icp_source_size");
+        REFINEMENT_ICP_TARGET_SIZE = getIntegerParameter("refinement_icp_target_size");
+        EVALUATION_THRESHOLD = getFloatParameter("evaluation_threshold");
+        MIN_PLANE_PORTION = getFloatParameter("min_plane_portion");
+        MIN_PLANE_DISTANCE = getFloatParameter("min_plane_distance");
+        MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
+        MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
+        MAX_TIME = getFloatParameter("max_time");
+        MAX_DEPTH = getIntegerParameter("max_depth");
+        ICP_EPS = getFloatParameter("icp_eps");
+        MAX_ICP_IT = getIntegerParameter("max_icp_it");
+        ICP_EPS2 = getFloatParameter("icp_eps2");
+        MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
+    }
+
+    float getFloatParameter(string parameter_name) {
+        string key;
+        if (nh_.searchParam(parameter_name, key) == true) {
+          double val;
+          ros::param::get(key, val);
+
+          ROS_INFO("%s: %f", parameter_name.c_str(), val);
+
+          return (float) val;
+        } else {
+            ROS_ERROR("parameter %s not found", parameter_name.c_str());
+            return 0;
+        }
+    }
+
+    int getIntegerParameter(string parameter_name) {
+
+        string key;
+        if (nh_.searchParam(parameter_name, key) == true) {
+          int val;
+          nh_.getParam(key, val);
+
+          ROS_INFO("%s:%d", parameter_name.c_str(), val);
+
+          return val;
+        } else {
+            ROS_ERROR("parameter %s not found", parameter_name.c_str());
+
+            return 0;
+        }
+    }
+
     // ******************************************************************************************************
     // functions only necessary for debugging
     // ******************************************************************************************************
@@ -1033,14 +1033,6 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
 
         file.close();
     }
-
-    bool rotationIsValid(MatrixXf R) {
-        if ((R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
-            return false;
-        }
-        return true;
-    }
-
 };
 
 int main(int argc, char** argv) {
