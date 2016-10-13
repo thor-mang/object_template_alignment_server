@@ -69,7 +69,7 @@ protected:
 public:
 
     float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR;
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MIN_TIME, MAX_PERCENTAGE, PERCENTAGE_STEP;
     int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
@@ -86,6 +86,7 @@ public:
     ~PointcloudAlignmentAction(void) {}
 
         void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
+        cout<<"execute Callback"<<endl;
 
         // preprocess pointcloud data
         float max_radius;
@@ -97,6 +98,7 @@ public:
             savePointcloud(target_pointcloud, "/home/sebastian/Desktop/plane2.txt");
         }
 
+        cout<<"input data has been preprocessed"<<endl;
 
 
         // convert initial_pose structure to transformation parameters
@@ -118,6 +120,7 @@ public:
         VectorXf t_init = t_icp;
         float s_init = 1;
 
+        cout<<"calling find pointcloud alignment"<<endl;
 
         // execute the pointcloud alignment algorithm
         find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
@@ -157,6 +160,7 @@ public:
     float find_pointcloud_alignment(int command, MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
 
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
+            cout<<"source or target pointcloud is zero"<<endl;
             return FLT_MAX;
         }
 
@@ -176,6 +180,21 @@ public:
         } else { // invalid command
             ROS_ERROR("Received invalid command: %d", command);
             as_.setAborted();
+        }
+    }
+
+    bool timeLimitReached(float passedTime, float overlapping_percentage) {
+        float tmp_time = passedTime - MIN_TIME;
+        if (tmp_time < 0) {
+            tmp_time = 0;
+        }
+
+        float min_percentage = MAX_PERCENTAGE - tmp_time*PERCENTAGE_STEP;
+
+        if (overlapping_percentage > min_percentage) {
+            return true;
+        } else {
+            return false;
         }
     }
 
@@ -202,7 +221,7 @@ public:
         #pragma omp parallel for shared(cur_err, R, t, s)
         for (int i = 0; i < queueLength; i++) {
 
-            if (i != 0 && getPassedTime(start) > MAX_TIME) {
+            if (i > 0 && timeLimitReached(getPassedTime(start), max_percentage)) {
                 continue;
             }
 
@@ -212,7 +231,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
 
             if (percentage > max_percentage && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_subcloud, R_i, t_i, s_i);
@@ -245,7 +264,7 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
+            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
@@ -261,6 +280,8 @@ public:
             itCt++;
         }
 
+        cout<<"stopped after "<<getPassedTime(start)<<" with "<<max_percentage*100<<"% aligned"<<endl;
+
         // execute final local icp iteration with more points for more accuracy
         source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
         target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
@@ -271,7 +292,7 @@ public:
         float s_i = s;
         local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()))*100.;
+        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
 
         if (percentage > max_percentage) {
             cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
@@ -284,7 +305,7 @@ public:
             sendFeedback(max_percentage, cur_err);
         }
 
-        cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<endl;
+        cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
         return cur_err;
     }
 
@@ -953,12 +974,14 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
         MIN_PLANE_DISTANCE = getFloatParameter("min_plane_distance");
         MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
         MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
-        MAX_TIME = getFloatParameter("max_time");
         MAX_DEPTH = getIntegerParameter("max_depth");
         ICP_EPS = getFloatParameter("icp_eps");
         MAX_ICP_IT = getIntegerParameter("max_icp_it");
         ICP_EPS2 = getFloatParameter("icp_eps2");
         MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
+        MIN_TIME = getFloatParameter("min_time");
+        MAX_PERCENTAGE = getFloatParameter("max_percentage");
+        PERCENTAGE_STEP = getFloatParameter("percentage_step");
     }
 
     float getFloatParameter(string parameter_name) {

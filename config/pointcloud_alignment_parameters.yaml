@@ -11,9 +11,11 @@ min_plane_portion: 0.2
 min_plane_distance: 0.01
 min_scaling_factor: 0.8
 max_scaling_factor: 1.2
-max_time: 1.2
 max_depth: 2
 icp_eps: 1.0e-05
 max_icp_it: 300
 icp_eps2: 0.1
 max_numerical_error: 1.0e-05
+min_time: 0.2
+max_percentage: 0.7
+percentage_step: 0.25
