@@ -183,21 +183,6 @@ public:
         }
     }
 
-    bool timeLimitReached(float passedTime, float overlapping_percentage) {
-        float tmp_time = passedTime - MIN_TIME;
-        if (tmp_time < 0) {
-            tmp_time = 0;
-        }
-
-        float min_percentage = MAX_PERCENTAGE - tmp_time*PERCENTAGE_STEP;
-
-        if (overlapping_percentage > min_percentage) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
     float global_pointcloud_alignment(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
         struct timeval start;
@@ -1013,6 +998,21 @@ float calc_error(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixX
             ROS_ERROR("parameter %s not found", parameter_name.c_str());
 
             return 0;
+        }
+    }
+
+    bool timeLimitReached(float passedTime, float overlapping_percentage) {
+        float tmp_time = passedTime - MIN_TIME;
+        if (tmp_time < 0) {
+            tmp_time = 0;
+        }
+
+        float min_percentage = MAX_PERCENTAGE - tmp_time*PERCENTAGE_STEP;
+
+        if (overlapping_percentage > min_percentage) {
+            return true;
+        } else {
+            return false;
         }
     }
 
