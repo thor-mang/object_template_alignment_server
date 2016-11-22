@@ -35,6 +35,9 @@
 #include <pthread.h>
 
 
+#include <pcl/visualization/cloud_viewer.h>
+
+
 using namespace Eigen;
 using namespace std;
 
@@ -92,11 +95,8 @@ public:
         float max_radius;
         MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud, max_radius);
         MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, max_radius, goal->initial_pose);
-        if (false) { // TODO
-            savePointcloud(target_pointcloud, "/home/sebastian/Desktop/plane1.txt");
-            target_pointcloud = removePlane(target_pointcloud);
-            savePointcloud(target_pointcloud, "/home/sebastian/Desktop/plane2.txt");
-        }
+
+        visualizePointcloud(target_pointcloud);
 
         cout<<"input data has been preprocessed"<<endl;
 
@@ -162,6 +162,12 @@ public:
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
             cout<<"source or target pointcloud is zero"<<endl;
             return FLT_MAX;
+        }
+
+        // print distances
+        if (false) {
+            createKdTree(target_pointcloud);
+            printDistances(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
         }
 
         // execute algorithm accoring to command
@@ -819,7 +825,56 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_target (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(target_msg, *pointcloud_target);
 
+        MatrixXf target_pointcloud(3, pointcloud_target->size());
+
+        for (int i = 0; i < pointcloud_target->size(); i++) {
+            target_pointcloud(0,i) = pointcloud_target->at(i).x;
+            target_pointcloud(1,i) = pointcloud_target->at(i).y;
+            target_pointcloud(2,i) = pointcloud_target->at(i).z;
+        }
+
+        if (true) {
+            target_pointcloud = removePlane(target_pointcloud);
+        }
+
         int target_size = 0;
+        for (int i = 0; i < target_pointcloud.cols(); i++) {
+            float distToCenter = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
+                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
+                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
+
+
+            if (distToCenter < TARGET_RADIUS_FACTOR*max_radius) {
+                target_size++;
+            }
+        }
+
+        if (target_size == target_pointcloud.cols()) {
+            return target_pointcloud;
+        }
+
+        MatrixXf target_pointcloud_new = MatrixXf(3,target_size);
+
+        int pos = 0;
+        for (int i = 0; i < target_pointcloud.cols(); i++) {
+            float dist = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
+                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
+                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
+
+            if (dist < TARGET_RADIUS_FACTOR*max_radius && pos < target_size) {
+                target_pointcloud_new(0,pos) = target_pointcloud(0,i);
+                target_pointcloud_new(1,pos) = target_pointcloud(1,i);
+                target_pointcloud_new(2,pos) = target_pointcloud(2,i);
+
+                pos++;
+            }
+        }
+
+        return target_pointcloud_new;
+
+
+
+        /*int target_size = 0;
         for (int i = 0; i < pointcloud_target->size(); i++) {
             float distToCenter = sqrt(pow(pointcloud_target->at(i).x - initial_pose.pose.position.x,2) +
                               pow(pointcloud_target->at(i).y - initial_pose.pose.position.y,2) +
@@ -849,7 +904,7 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
 
                 pos++;
             }
-        }
+        }*/
 
         return target_pointcloud;
     }
@@ -965,7 +1020,7 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         ICP_EPS2 = getFloatParameter("icp_eps2");
         MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
         MAX_PERCENTAGE = getFloatParameter("max_percentage");
-        DAMPING_COEFFICIENT = getFloatParameter("damping_coefficent");
+        DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
         DELAY_FACTOR = getFloatParameter("delay_factor");
     }
 
@@ -1044,12 +1099,20 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
     }
 
     void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
+        cout<<"printing distances to file"<<endl;
+        cout<<"source_cloud size "<<source_cloud.size()<<endl;
+        cout<<"targetcloud size "<<target_cloud.size()<<endl;
+        cout<<"R: "<<endl<<R<<endl<<"t: "<<endl<<t<<endl<<"s: "<<endl<<s<<endl;
         MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
         apply_transformation(source_cloud, source_proj, R, t , s);
+        cout<<"nach apply transformation"<<endl;
         MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
         VectorXf distances(source_cloud.cols());
 
+        cout<<"vor find correspondences"<<endl;
         find_correspondences(source_proj, target_cloud, correspondences, distances);
+
+        cout<<"opening file"<<endl;
 
         ofstream file;
 
@@ -1063,6 +1126,27 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         }
 
         file.close();
+        cout<<"finished printing distances"<<endl;
+    }
+
+    void visualizePointcloud(MatrixXf pointcloud) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+
+        // Generate pointcloud data
+        pointcloud_pcl->width = pointcloud.cols();
+        pointcloud_pcl->height = 1;
+        pointcloud_pcl->points.resize (pointcloud_pcl->width * pointcloud_pcl->height);
+
+        for (size_t i = 0; i < pointcloud_pcl->points.size (); ++i) {
+            pointcloud_pcl->points[i].x = pointcloud(0,i);
+            pointcloud_pcl->points[i].y = pointcloud(1,i);
+            pointcloud_pcl->points[i].z = pointcloud(2,i);
+        }
+
+        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
+        viewer.showCloud (pointcloud_pcl);
+        while (!viewer.wasStopped ()) {}
     }
 };
 
