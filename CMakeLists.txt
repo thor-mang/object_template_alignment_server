@@ -66,6 +66,7 @@ find_package(Boost REQUIRED COMPONENTS system)
 add_action_files(
   DIRECTORY action
   FILES PointcloudAlignment.action
+  FILES GoIcp.action
 )
 
 ## Generate added messages and services with any dependencies listed here

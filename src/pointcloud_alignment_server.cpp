@@ -58,6 +58,8 @@ typedef struct PriorityQueue {
     QueueElement *head;
 } PriorityQueue;
 
+static float final_percentage = 0, final_error = FLT_MAX;
+
 class PointcloudAlignmentAction
 {
 private:
@@ -78,8 +80,8 @@ public:
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
     PointcloudAlignmentAction(std::string name) :
-    as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
-    action_name_(name) {
+        as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
+        action_name_(name) {
 
         initializeParameters();
 
@@ -96,7 +98,7 @@ public:
         MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud, max_radius);
         MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, max_radius, goal->initial_pose);
 
-        visualizePointcloud(target_pointcloud);
+        //visualizePointcloud(target_pointcloud);
 
         cout<<"input data has been preprocessed"<<endl;
 
@@ -150,6 +152,9 @@ public:
 
         result.pose.orientation = orientation;
         result.pose.position = position;
+
+        //result_.aligned_percentage = final_percentage;
+        //result_.normalized_error = final_error;
 
         result_.transformation_pose = result;
 
@@ -271,8 +276,6 @@ public:
             itCt++;
         }
 
-        cout<<"stopped after "<<getPassedTime(start)<<" with "<<max_percentage*100<<"% aligned"<<endl;
-
         // execute final local icp iteration with more points for more accuracy
         source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
         target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
@@ -285,7 +288,7 @@ public:
 
         float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
 
-        if (percentage > max_percentage) {
+        if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
             cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
             max_percentage = percentage;
 
@@ -295,6 +298,9 @@ public:
 
             sendFeedback(max_percentage, cur_err);
         }
+
+        final_percentage = max_percentage;
+        final_error = cur_err;
 
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
         return cur_err;
@@ -1154,7 +1160,6 @@ int main(int argc, char** argv) {
     ros::init(argc, argv, "pointcloud_alignment");
 
     PointcloudAlignmentAction pointcloud_alignment(ros::this_node::getName());
-
     ros::spin();
 
     return 0;
