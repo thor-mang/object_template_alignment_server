@@ -75,7 +75,7 @@ public:
 
     float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
           MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR;
-    int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT;
+    int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
 
@@ -160,6 +160,10 @@ public:
 
         ROS_INFO("%s: Succeeded", action_name_.c_str());
         as_.setSucceeded(result_);
+
+        deleteMatrix(source_pointcloud);
+        deleteMatrix(target_pointcloud);
+        deleteMatrix(R_init);
     }
 
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
@@ -181,7 +185,14 @@ public:
 
             MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
             MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
+
+            deleteSourceSubclouds(source_subclouds);
+            delete(source_subclouds);
+            deleteMatrix(target_subcloud);
+
             createKdTree(target_subcloud);
+
+
 
             return  local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
         } else  if (command == 1) { // execute global pointcloud alignment
@@ -192,6 +203,8 @@ public:
             ROS_ERROR("Received invalid command: %d", command);
             as_.setAborted();
         }
+
+
     }
 
     float global_pointcloud_alignment(MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
@@ -214,8 +227,9 @@ public:
         MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
         createKdTree(target_subcloud);
 
-        #pragma omp parallel for shared(cur_err, R, t, s)
-        for (int i = 0; i < queueLength; i++) {
+        int i = 0;
+        #pragma omp parallel for shared(cur_err, R, t, s, i)
+        for (i = 0; i < queueLength; i++) {
 
             if (i > 0 && stopCriterionFulfilled(getPassedTime(start), max_percentage)) {
                 continue;
@@ -302,6 +316,8 @@ public:
         final_percentage = max_percentage;
         final_error = cur_err;
 
+        deleteMatrix(R_init);
+
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
         return cur_err;
     }
@@ -335,13 +351,17 @@ public:
 
             apply_transformation(source_cloud, source_proj, R, t, s);
 
-            find_correspondences(source_proj, target_pointcloud, correspondences, distances);
+            if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+                return FLT_MAX;
+            }
 
             if (trim_pointcloud(source_cloud, correspondences, distances, source_trimmed, correspondences_trimmed) == false) {
                 return FLT_MAX;
             }
 
-            find_transformation(source_trimmed, correspondences_trimmed, R, t, s);
+            if (find_transformation(source_trimmed, correspondences_trimmed, R, t, s) == false) {
+                return FLT_MAX;
+            }
 
             // if the parameters did not change, use different subsample of the source pointcloud
             // if all subsamples have been tried without any effect, quit the loop
@@ -371,7 +391,9 @@ public:
         VectorXf distances(source_cloud.cols());
         int number = 0;
 
-        find_correspondences(source_proj, target_pointcloud , correspondences, distances);
+        if (find_correspondences(source_proj, target_pointcloud , correspondences, distances) == false) {
+            return INT_MAX;
+        }
 
         for (int i = 0; i < source_cloud.cols(); i++) {
             if (distances(i) < EVALUATION_THRESHOLD) {
@@ -428,13 +450,20 @@ public:
         return true;
     }
 
-    void find_correspondences(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud , MatrixXf &correspondences, VectorXf &distances) {
+    bool find_correspondences(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud , MatrixXf &correspondences, VectorXf &distances) {
         pcl::PointXYZ searchPoint;
 
         for (int i = 0; i < source_pointcloud.cols(); i++) {
             searchPoint.x = source_pointcloud(0,i);
             searchPoint.y = source_pointcloud(1,i);
             searchPoint.z = source_pointcloud(2,i);
+
+            if ((isnormal(searchPoint.x) == 0 && searchPoint.x != 0) ||
+                (isnormal(searchPoint.x) == 0 && searchPoint.x != 0) ||
+                (isnormal(searchPoint.x) == 0 && searchPoint.x != 0)) {
+                return false;
+            }
+
 
             std::vector<int> pointIdxNKNSearch(1);
             std::vector<float> pointNKNSquaredDistance(1);
@@ -446,9 +475,11 @@ public:
                 distances(i) = sqrt(pointNKNSquaredDistance[0]);
             }
         }
+
+        return true;
     }
 
-    void find_transformation(MatrixXf const &pointcloud, MatrixXf const &correspondences, MatrixXf &R, VectorXf &t, float &s) {
+    bool find_transformation(MatrixXf const &pointcloud, MatrixXf const &correspondences, MatrixXf &R, VectorXf &t, float &s) {
         VectorXf mean1 = pointcloud.array().rowwise().mean();
         VectorXf mean2 = correspondences.array().rowwise().mean();
 
@@ -496,6 +527,8 @@ public:
         s = 1.;
 
         t = mean2 - s*R*mean1;
+
+        return parametersValid(R,t,s);
     }
 
     void apply_transformation(MatrixXf const &pointcloud, MatrixXf &pointcloud_proj, MatrixXf const &R, VectorXf const &t, float s) {
@@ -503,7 +536,7 @@ public:
         pointcloud_proj = pointcloud_proj.array().colwise() + t.array();
     }
 
-float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+    float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
 
         MatrixXf source_proj(3, source_pointcloud.cols());
         MatrixXf correspondences(3, source_pointcloud.cols());
@@ -511,8 +544,11 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         MatrixXf source_proj_trimmed, correspondences_trimmed;
 
         apply_transformation(source_pointcloud, source_proj, R, t, s);
-        find_correspondences(source_proj, target_pointcloud, correspondences, distances);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
         trim_pointcloud(source_proj, correspondences, distances, source_proj_trimmed, correspondences_trimmed);
+
 
         MatrixXf diff = source_proj_trimmed - correspondences_trimmed;
 
@@ -839,7 +875,8 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
             target_pointcloud(2,i) = pointcloud_target->at(i).z;
         }
 
-        if (true) {
+        if (REMOVE_PLANE == 1) {
+            cout<<"removing plane"<<endl;
             target_pointcloud = removePlane(target_pointcloud);
         }
 
@@ -877,42 +914,6 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         }
 
         return target_pointcloud_new;
-
-
-
-        /*int target_size = 0;
-        for (int i = 0; i < pointcloud_target->size(); i++) {
-            float distToCenter = sqrt(pow(pointcloud_target->at(i).x - initial_pose.pose.position.x,2) +
-                              pow(pointcloud_target->at(i).y - initial_pose.pose.position.y,2) +
-                              pow(pointcloud_target->at(i).z - initial_pose.pose.position.z,2));
-
-
-            if (distToCenter < TARGET_RADIUS_FACTOR*max_radius) {
-                target_size++;
-            }
-
-        }
-
-
-        MatrixXf target_pointcloud = MatrixXf(3,target_size);
-
-        int pos = 0;
-        for (int i = 0; i < pointcloud_target->size(); i++) {
-            float dist = sqrt(pow(pointcloud_target->at(i).x - initial_pose.pose.position.x,2) +
-                              pow(pointcloud_target->at(i).y - initial_pose.pose.position.y,2) +
-                              pow(pointcloud_target->at(i).z - initial_pose.pose.position.z,2));
-
-
-            if (dist < TARGET_RADIUS_FACTOR*max_radius && pos < target_size) {
-                target_pointcloud(0,pos) = pointcloud_target->at(i).x;
-                target_pointcloud(1,pos) = pointcloud_target->at(i).y;
-                target_pointcloud(2,pos) = pointcloud_target->at(i).z;
-
-                pos++;
-            }
-        }*/
-
-        return target_pointcloud;
     }
 
     MatrixXf *subsample_source_cloud(MatrixXf source_pointcloud, float size_source) {
@@ -952,16 +953,14 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
           seg.setInputCloud (pcl_pointcloud);
           seg.segment (*inliers, *coefficients);
 
-          if (inliers->indices.size () == 0)
-          {
+          if (inliers->indices.size () == 0) {
             ROS_ERROR ("Could not estimate a planar model for the given dataset.");
             return pointcloud;
           }
 
           if (inliers->indices.size() < MIN_PLANE_PORTION*((float) pointcloud.cols())) {
               return pointcloud;
-          }
-          cout<<"removing plane"<<endl;
+          }          
 
           MatrixXf new_pointcloud(3,pointcloud.cols()-inliers->indices.size());
 
@@ -1006,6 +1005,28 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         return true;
     }
 
+    bool parametersValid(MatrixXf R, VectorXf t, float s) {
+        for (int i = 0; i < R.rows(); i++) {
+            for (int j = 0; j < R.cols(); j++) {
+                if (isnormal(R(i,j)) == 0 && R(i,j) != 0) {
+                    return false;
+                }
+            }
+        }
+
+        for (int i = 0; i < t.cols(); i++) {
+            if (isnormal(t(i)) == 0 && t(i) != 0) {
+                return false;
+            }
+        }
+
+        if (isnormal(s) == 0 && s != 0) {
+            return false;
+        }
+
+        return true;
+    }
+
     void initializeParameters() {
         DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
         MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
@@ -1028,6 +1049,7 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         MAX_PERCENTAGE = getFloatParameter("max_percentage");
         DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
         DELAY_FACTOR = getFloatParameter("delay_factor");
+        REMOVE_PLANE = getIntegerParameter("remove_plane");
     }
 
     float getFloatParameter(string parameter_name) {
@@ -1116,7 +1138,9 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         VectorXf distances(source_cloud.cols());
 
         cout<<"vor find correspondences"<<endl;
-        find_correspondences(source_proj, target_cloud, correspondences, distances);
+        if (find_correspondences(source_proj, target_cloud, correspondences, distances) == false) {
+            return;
+        }
 
         cout<<"opening file"<<endl;
 
@@ -1132,6 +1156,10 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         }
 
         file.close();
+
+        deleteMatrix(source_proj);
+        deleteMatrix(correspondences);
+
         cout<<"finished printing distances"<<endl;
     }
 
@@ -1153,6 +1181,20 @@ float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_point
         pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
         viewer.showCloud (pointcloud_pcl);
         while (!viewer.wasStopped ()) {}
+    }
+
+    void deleteMatrix(MatrixXf &matrix) {
+        matrix.resize(0,0);
+    }
+
+    void deleteVector(VectorXf &vector) {
+        vector.resize(0);
+    }
+
+    void deleteSourceSubclouds(MatrixXf *subclouds) {
+        for (int i = 0; i < NUMBER_SUBCLOUDS; i++) {
+            deleteMatrix(subclouds[i]);
+        }
     }
 };
 

@@ -124,6 +124,10 @@ public:
         // execute the pointcloud alignment algorithm
         //find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp);
 
+        source_pointcloud = random_filter(source_pointcloud, SIZE_SOURCE);
+        target_pointcloud = random_filter(target_pointcloud, SIZE_TARGET);
+        createKdTree(target_pointcloud);
+
         float E_star = go_icp(source_pointcloud, target_pointcloud, goal->eps, R_icp, t_icp, goal->overlapping_percentage);
 
         // send goal
@@ -160,13 +164,15 @@ public:
     }
 
     float go_icp(MatrixXf &pc1, MatrixXf &pc2, float eps, MatrixXf &R_star, VectorXf &t_star, float overlapping_portion) {
+        cout<<"go_icp"<<endl;
         Cube *initial_rotation_cube = createRotationCube(VectorXf(3), M_PI);
-        Cube *initial_translation_cube;// = createTranslationCube(...) // TODO:
+        Cube *initial_translation_cube = createTranslationCube(VectorXf(3), 3);
 
         return rotationBnB(pc1, pc2, eps, initial_rotation_cube, initial_translation_cube, R_star, t_star, overlapping_portion);
     }
 
     float rotationBnB(MatrixXf &pc1, MatrixXf &pc2, float eps, Cube *initial_rotation_cube, Cube *initial_translation_cube, MatrixXf &R_star, VectorXf &t_star, float overlapping_portion) {
+        cout<<"rotationBnB"<<endl;
         PriorityQueue *Q = createQueue();
         insert(Q, initial_rotation_cube);
         float E_star = FLT_MAX;
@@ -196,20 +202,28 @@ public:
                 insert(Q, subcubes[i]);
             }
         }
+
+        cout<<"rotation BnB end"<<endl;
+
+        return E_star;
     }
 
-    float translationBnB(MatrixXf &pc1, MatrixXf &pc2, float eps, Cube *initial_cube, VectorXf r, VectorXf gamma_r, float E_star, VectorXf &t_star) {
+    float translationBnB(MatrixXf &pc1, MatrixXf &pc2, float eps, Cube *initial_cube, VectorXf r, VectorXf gamma_r, float &E_star, VectorXf &t_star) {
+        cout<<"translation BnB"<<endl;
         PriorityQueue *Q = createQueue();
         insert(Q, initial_cube);
         float E_t_star = E_star;
 
+        cout<<"eps: "<<eps<<endl;
         while (length(Q) > 0) {
+            cout<<"iteration"<<endl;
             Cube *C_cur = extractFirstElement(Q);
             if (E_t_star - C_cur->lower_bound < eps) {
                 break;
             }
             Cube **subcubes = splitTranslationCube(C_cur);
             for (int i = 0; i < 8; i++) {
+                cout<<"i: "<<i<<endl;
                 subcubes[i]->upper_bound = calc_upper_bound_translation(pc1, pc2, getAARot(r), subcubes[i]->t0, subcubes[i]->half_edge_length, gamma_r);
                 if (subcubes[i]->upper_bound < E_t_star) {
                     E_t_star = subcubes[i]->upper_bound;
@@ -222,6 +236,8 @@ public:
                 insert(Q, subcubes[i]);
             }
         }
+
+        cout<<"translation BnB end"<<endl;
 
         return E_t_star;
     }
@@ -814,27 +830,27 @@ public:
     }
 
     void initializeParameters() {
-        DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
-        MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
-        TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
-        NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
-        SIZE_SOURCE = getIntegerParameter("size_source");
-        SIZE_TARGET = getIntegerParameter("size_target");
-        REFINEMENT_ICP_SOURCE_SIZE = getIntegerParameter("refinement_icp_source_size");
-        REFINEMENT_ICP_TARGET_SIZE = getIntegerParameter("refinement_icp_target_size");
-        EVALUATION_THRESHOLD = getFloatParameter("evaluation_threshold");
-        MIN_PLANE_PORTION = getFloatParameter("min_plane_portion");
-        MIN_PLANE_DISTANCE = getFloatParameter("min_plane_distance");
-        MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
-        MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
-        MAX_DEPTH = getIntegerParameter("max_depth");
-        ICP_EPS = getFloatParameter("icp_eps");
-        MAX_ICP_IT = getIntegerParameter("max_icp_it");
-        ICP_EPS2 = getFloatParameter("icp_eps2");
-        MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
-        MAX_PERCENTAGE = getFloatParameter("max_percentage");
-        DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
-        DELAY_FACTOR = getFloatParameter("delay_factor");
+        DISTANCE_THRESHOLD = 0.02;//getFloatParameter("distance_threshold");
+        //MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
+        TARGET_RADIUS_FACTOR = 1.3;//getFloatParameter("target_radius_factor");
+        //NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
+        SIZE_SOURCE = 250;//getIntegerParameter("size_source");
+        SIZE_TARGET = 500;//getIntegerParameter("size_target");
+        //REFINEMENT_ICP_SOURCE_SIZE = getIntegerParameter("refinement_icp_source_size");
+        //REFINEMENT_ICP_TARGET_SIZE = getIntegerParameter("refinement_icp_target_size");
+        //EVALUATION_THRESHOLD = getFloatParameter("evaluation_threshold");
+        MIN_PLANE_PORTION = 0.2;//getFloatParameter("min_plane_portion");
+        MIN_PLANE_DISTANCE = 0.01;//getFloatParameter("min_plane_distance");
+        //MIN_SCALING_FACTOR = getFloatParameter("min_scaling_factor");
+        //MAX_SCALING_FACTOR = getFloatParameter("max_scaling_factor");
+        //MAX_DEPTH = getIntegerParameter("max_depth");
+        ICP_EPS = 1e-5;//getFloatParameter("icp_eps");
+        MAX_ICP_IT = 300;// getIntegerParameter("max_icp_it");
+        //ICP_EPS2 = getFloatParameter("icp_eps2");
+        //MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
+        //MAX_PERCENTAGE = getFloatParameter("max_percentage");
+        //DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
+        //DELAY_FACTOR = getFloatParameter("delay_factor");
     }
 
     float getFloatParameter(string parameter_name) {
