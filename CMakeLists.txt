@@ -66,7 +66,6 @@ find_package(Boost REQUIRED COMPONENTS system)
 add_action_files(
   DIRECTORY action
   FILES PointcloudAlignment.action
-  FILES GoIcp.action
 )
 
 ## Generate added messages and services with any dependencies listed here
@@ -133,7 +132,7 @@ include_directories(
 
 ## Declare a C++ executable
 add_executable(pointcloud_alignment_server src/pointcloud_alignment_server.cpp)
-add_executable(go_icp_server src/go_icp_server.cpp)
+
 
 
 ## Compiler flags
@@ -150,11 +149,11 @@ endif()
 ## same as for the library above
 # add_dependencies(object_template_alignment_server_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(pointcloud_alignment_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-add_dependencies(go_icp_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(pointcloud_alignment_server ${catkin_LIBRARIES})
-target_link_libraries(go_icp_server ${catkin_LIBRARIES})
+
 # target_link_libraries(object_template_alignment_server_node
 #   ${catkin_LIBRARIES}
 # )
