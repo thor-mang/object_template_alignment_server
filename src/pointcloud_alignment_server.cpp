@@ -95,6 +95,7 @@ public:
 
         // preprocess pointcloud data
         float max_radius;
+
         MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud, max_radius);
         MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, max_radius, goal->initial_pose);
 
@@ -160,10 +161,6 @@ public:
 
         ROS_INFO("%s: Succeeded", action_name_.c_str());
         as_.setSucceeded(result_);
-
-        deleteMatrix(source_pointcloud);
-        deleteMatrix(target_pointcloud);
-        deleteMatrix(R_init);
     }
 
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
@@ -186,13 +183,7 @@ public:
             MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
             MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
 
-            deleteSourceSubclouds(source_subclouds);
-            delete(source_subclouds);
-            deleteMatrix(target_subcloud);
-
             createKdTree(target_subcloud);
-
-
 
             return  local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
         } else  if (command == 1) { // execute global pointcloud alignment
@@ -315,8 +306,6 @@ public:
 
         final_percentage = max_percentage;
         final_error = cur_err;
-
-        deleteMatrix(R_init);
 
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
         return cur_err;
@@ -459,11 +448,10 @@ public:
             searchPoint.z = source_pointcloud(2,i);
 
             if ((isnormal(searchPoint.x) == 0 && searchPoint.x != 0) ||
-                (isnormal(searchPoint.x) == 0 && searchPoint.x != 0) ||
-                (isnormal(searchPoint.x) == 0 && searchPoint.x != 0)) {
+                (isnormal(searchPoint.y) == 0 && searchPoint.y != 0) ||
+                (isnormal(searchPoint.z) == 0 && searchPoint.z != 0)) {
                 return false;
             }
-
 
             std::vector<int> pointIdxNKNSearch(1);
             std::vector<float> pointNKNSquaredDistance(1);
@@ -875,6 +863,7 @@ public:
             target_pointcloud(2,i) = pointcloud_target->at(i).z;
         }
 
+
         if (REMOVE_PLANE == 1) {
             cout<<"removing plane"<<endl;
             target_pointcloud = removePlane(target_pointcloud);
@@ -1092,19 +1081,6 @@ public:
         } else {
             return false;
         }
-
-        /*float tmp_time = passedTime - MIN_TIME;
-        if (tmp_time < 0) {
-            tmp_time = 0;
-        }
-
-        float min_percentage = MAX_PERCENTAGE - tmp_time*PERCENTAGE_STEP;
-
-        if (overlapping_percentage > min_percentage) {
-            return true;
-        } else {
-            return false;
-        }*/
     }
 
     // ******************************************************************************************************
@@ -1157,9 +1133,6 @@ public:
 
         file.close();
 
-        deleteMatrix(source_proj);
-        deleteMatrix(correspondences);
-
         cout<<"finished printing distances"<<endl;
     }
 
@@ -1181,20 +1154,6 @@ public:
         pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
         viewer.showCloud (pointcloud_pcl);
         while (!viewer.wasStopped ()) {}
-    }
-
-    void deleteMatrix(MatrixXf &matrix) {
-        matrix.resize(0,0);
-    }
-
-    void deleteVector(VectorXf &vector) {
-        vector.resize(0);
-    }
-
-    void deleteSourceSubclouds(MatrixXf *subclouds) {
-        for (int i = 0; i < NUMBER_SUBCLOUDS; i++) {
-            deleteMatrix(subclouds[i]);
-        }
     }
 };
 
