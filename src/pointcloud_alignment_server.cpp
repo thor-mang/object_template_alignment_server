@@ -58,8 +58,6 @@ typedef struct PriorityQueue {
     QueueElement *head;
 } PriorityQueue;
 
-static float final_percentage = 0, final_error = FLT_MAX;
-
 class PointcloudAlignmentAction
 {
 private:
@@ -91,17 +89,15 @@ public:
     ~PointcloudAlignmentAction(void) {}
 
         void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
-        cout<<"execute Callback"<<endl;
 
         // preprocess pointcloud data
         float max_radius;
-
         MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud, max_radius);
         MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, max_radius, goal->initial_pose);
 
         //visualizePointcloud(target_pointcloud);
 
-        cout<<"input data has been preprocessed"<<endl;
+        ROS_INFO("input data has been preprocessed");
 
 
         // convert initial_pose structure to transformation parameters
@@ -123,13 +119,12 @@ public:
         VectorXf t_init = t_icp;
         float s_init = 1;
 
-        cout<<"calling find pointcloud alignment"<<endl;
 
         // execute the pointcloud alignment algorithm
         find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
 
 
-        // send goal
+        // send result to client
         geometry_msgs::Quaternion orientation;
         geometry_msgs::Point position;
 
@@ -138,7 +133,7 @@ public:
         position.z = t_icp(2);
 
         if (rotationIsValid(R_icp) == false || R_icp(0,0) + R_icp(1,1) + R_icp(2,2) == 0) {
-            ROS_ERROR("Received invalid Rotation matrix! Returning initial pose.");
+            ROS_ERROR("Computed rotation matrix is not valid! Returning initial pose to client.");
             R_icp = R_init;
             t_icp = t_init;
             s_icp = s_init;
@@ -154,9 +149,6 @@ public:
         result.pose.orientation = orientation;
         result.pose.position = position;
 
-        //result_.aligned_percentage = final_percentage;
-        //result_.normalized_error = final_error;
-
         result_.transformation_pose = result;
 
         ROS_INFO("%s: Succeeded", action_name_.c_str());
@@ -166,40 +158,37 @@ public:
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
 
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
-            cout<<"source or target pointcloud is zero"<<endl;
+            ROS_ERROR("source or target pointcloud is zero");
             return FLT_MAX;
         }
 
-        // print distances
+        // print distances TODO: remove
         if (false) {
             createKdTree(target_pointcloud);
             printDistances(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
         }
 
-        // execute algorithm accoring to command
+        // execute local or global algorithm
         if (command == 0) { // execute local icp
-            cout<<"executing local icp"<<endl;
+            ROS_INFO("executing local icp");
 
             MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
             MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
-
             createKdTree(target_subcloud);
 
             return  local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
         } else  if (command == 1) { // execute global pointcloud alignment
-            cout<<"executing global icp"<<endl;
+            ROS_INFO("executing global icp");
             return global_pointcloud_alignment(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
-
         } else { // invalid command
             ROS_ERROR("Received invalid command: %d", command);
             as_.setAborted();
         }
-
-
     }
 
     float global_pointcloud_alignment(MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
+        // set up parameters
         struct timeval start;
         gettimeofday(&start, NULL);
 
@@ -215,11 +204,18 @@ public:
         float max_percentage = FLT_MIN;
 
         MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
+        //visualizePointcloud(source_subclouds[0]);
+
         MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
         createKdTree(target_subcloud);
 
+        //visualizePointcloud(source_subclouds[0]);
+        visualizePointcloud(target_subcloud);
+        visualizePointclouds(source_subclouds[0], target_subcloud);
+
+        // process priority queue
         int i = 0;
-        #pragma omp parallel for shared(cur_err, R, t, s, i)
+        #pragma omp parallel for shared(cur_err, R, t, s, i, max_percentage, itCt)
         for (i = 0; i < queueLength; i++) {
 
             if (i > 0 && stopCriterionFulfilled(getPassedTime(start), max_percentage)) {
@@ -232,10 +228,11 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
+            float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
             if (percentage > max_percentage && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cur_err = weightedError(source_pointcloud, target_subcloud, R_i, t_i, s_i);
+                cout<<"i: "<<i<<", "<<percentage<<endl;
+                cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
                 max_percentage = percentage;
 
                 R = R_i;
@@ -257,7 +254,7 @@ public:
         R_sym[1] = R*getRotationMatrix(0,M_PI,0);
         R_sym[2] = R*getRotationMatrix(0,0,M_PI);
 
-        #pragma omp parallel for shared(cur_err, R, t, s)
+        #pragma omp parallel for shared(cur_err, R, t, s, i, max_percentage, itCt)
         for (int i = 0; i < 3; i++) {
             MatrixXf R_i = R_sym[i];
             VectorXf t_i = t_init;
@@ -265,10 +262,10 @@ public:
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-            float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
+            float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
+                cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
                 max_percentage = percentage;
 
                 R = R_i;
@@ -291,10 +288,10 @@ public:
         float s_i = s;
         local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-        float percentage = (((float) pointsLowerThanThreshold(source_pointcloud, target_subcloud, R_i, t_i, s_i)) / ((float) source_pointcloud.cols()));
+        float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
         if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-            cur_err = weightedError(source_pointcloud, target_pointcloud , R_i, t_i, s_i);
+            cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
             max_percentage = percentage;
 
             R = R_i;
@@ -303,9 +300,6 @@ public:
 
             sendFeedback(max_percentage, cur_err);
         }
-
-        final_percentage = max_percentage;
-        final_error = cur_err;
 
         cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
         return cur_err;
@@ -344,6 +338,10 @@ public:
                 return FLT_MAX;
             }
 
+            /*if (itCt  == 1) {
+                saveData(source_cloud, target_pointcloud, correspondences);
+            }*/
+
             if (trim_pointcloud(source_cloud, correspondences, distances, source_trimmed, correspondences_trimmed) == false) {
                 return FLT_MAX;
             }
@@ -371,6 +369,10 @@ public:
         }
 
         return calc_error(source_subclouds[0], target_pointcloud, R, t, s);
+    }
+
+    float calc_overlapping_percentage(MatrixXf const &source_cloud, MatrixXf const &target_cloud, MatrixXf const &R, MatrixXf const &t, float s) {
+        return (((float) pointsLowerThanThreshold(source_cloud, target_cloud, R, t, s)) / ((float) source_cloud.cols()));
     }
 
     int pointsLowerThanThreshold(MatrixXf const &source_cloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const& t, float s) {
@@ -911,7 +913,6 @@ public:
         for (int i = 0; i < NUMBER_SUBCLOUDS; i++) {
             source_subclouds[i] = random_filter(source_pointcloud, size_source);
         }
-
         return source_subclouds;
     }
 
@@ -1154,6 +1155,76 @@ public:
         pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
         viewer.showCloud (pointcloud_pcl);
         while (!viewer.wasStopped ()) {}
+    }
+
+    void visualizePointclouds(MatrixXf pointcloud1, MatrixXf pointcloud2) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud1_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+        for (int i = 0; i < pointcloud2.cols(); i++) {
+            pointcloud2(0,i) = pointcloud2(0,i)+2;
+            pointcloud2(1,i) = pointcloud2(1,i)+2;
+            pointcloud2(2,i) = pointcloud2(2,i)+0.5;
+        }
+
+
+        /*// Generate pointcloud data
+        pointcloud1_pcl->width = pointcloud1.cols();
+        pointcloud1_pcl->height = 1;
+        pointcloud1_pcl->points.resize (pointcloud1_pcl->width * pointcloud1_pcl->height);
+
+        for (size_t i = 0; i < pointcloud1_pcl->points.size (); ++i) {
+            pointcloud1_pcl->points[i].x = pointcloud1(0,i);
+            pointcloud1_pcl->points[i].y = pointcloud1(1,i);
+            pointcloud1_pcl->points[i].z = pointcloud1(2,i);
+        }
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud2_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+
+        // Generate pointcloud data
+        pointcloud2_pcl->width = pointcloud2.cols();
+        pointcloud2_pcl->height = 1;
+        pointcloud2_pcl->points.resize (pointcloud2_pcl->width * pointcloud2_pcl->height);
+
+        for (size_t i = 0; i < pointcloud2_pcl->points.size (); ++i) {
+            pointcloud2_pcl->points[i].x = pointcloud2(0,i);
+            pointcloud2_pcl->points[i].y = pointcloud2(1,i);
+            pointcloud2_pcl->points[i].z = pointcloud2(2,i);
+        }
+
+        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
+        viewer.showCloud (pointcloud1_pcl);
+        viewer.showCloud (pointcloud2_pcl);
+        while (!viewer.wasStopped ()) {}*/
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+        // Generate pointcloud data
+        pointcloud_pcl->width = pointcloud1.cols()+pointcloud2.cols();
+        pointcloud_pcl->height = 1;
+        pointcloud_pcl->points.resize (pointcloud_pcl->width * pointcloud_pcl->height);
+
+        for (size_t i = 0; i < pointcloud1_pcl->points.size (); ++i) {
+            pointcloud_pcl->points[i].x = pointcloud1(0,i);
+            pointcloud_pcl->points[i].y = pointcloud1(1,i);
+            pointcloud_pcl->points[i].z = pointcloud1(2,i);
+        }
+
+        for (size_t i = 0; i < pointcloud2.cols(); ++i) {
+            pointcloud_pcl->points[i+pointcloud1.cols()].x = pointcloud2(0,i);
+            pointcloud_pcl->points[i+pointcloud1.cols()].y = pointcloud2(1,i);
+            pointcloud_pcl->points[i+pointcloud1.cols()].z = pointcloud2(2,i);
+        }
+
+        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
+        viewer.showCloud (pointcloud_pcl);
+        while (!viewer.wasStopped ()) {}
+    }
+
+    void saveData(MatrixXf pc1, MatrixXf pc2, MatrixXf cp) {
+        savePointcloud(pc1, "/home/sebastian/Desktop/pc1.txt");
+        savePointcloud(pc2, "/home/sebastian/Desktop/pc2.txt");
+        savePointcloud(cp, "/home/sebastian/Desktop/cp.txt");
     }
 };
 
