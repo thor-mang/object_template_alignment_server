@@ -72,7 +72,7 @@ protected:
 public:
 
     float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR;
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR, DISTANCE_THRESHOLD_FACTOR, max_radius;
     int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
@@ -91,11 +91,8 @@ public:
         void executeCB(const object_template_alignment_server::PointcloudAlignmentGoalConstPtr &goal) {
 
         // preprocess pointcloud data
-        float max_radius;
-        MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud, max_radius);
-        MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, max_radius, goal->initial_pose);
-
-        //visualizePointcloud(target_pointcloud);
+        MatrixXf source_pointcloud = preprocessSourcePointcloud(goal->source_pointcloud);
+        MatrixXf target_pointcloud = preprocessTargetPointcloud(goal->target_pointcloud, goal->initial_pose);
 
         ROS_INFO("input data has been preprocessed");
 
@@ -155,17 +152,14 @@ public:
         as_.setSucceeded(result_);
     }
 
+    // evaluates the command parameter and calls the local or global point cloud alignment algorithm
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
+        // set evaluation threshold
+        DISTANCE_THRESHOLD = DISTANCE_THRESHOLD_FACTOR * max_radius;
 
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
             ROS_ERROR("source or target pointcloud is zero");
             return FLT_MAX;
-        }
-
-        // print distances TODO: remove
-        if (false) {
-            createKdTree(target_pointcloud);
-            printDistances(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
         }
 
         // execute local or global algorithm
@@ -186,6 +180,7 @@ public:
         }
     }
 
+    // the global search procedure
     float global_pointcloud_alignment(MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
         // set up parameters
@@ -193,7 +188,7 @@ public:
         gettimeofday(&start, NULL);
 
         int queueLength;
-        Cube **Q = createPriorityQueue(queueLength);
+        Cube **Q = initPriorityQueue(queueLength);
 
         MatrixXf R_init = R;
         VectorXf t_init = t;
@@ -204,14 +199,10 @@ public:
         float max_percentage = FLT_MIN;
 
         MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
-        //visualizePointcloud(source_subclouds[0]);
 
         MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
         createKdTree(target_subcloud);
 
-        //visualizePointcloud(source_subclouds[0]);
-        visualizePointcloud(target_subcloud);
-        visualizePointclouds(source_subclouds[0], target_subcloud);
 
         // process priority queue
         int i = 0;
@@ -231,8 +222,7 @@ public:
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
             if (percentage > max_percentage && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cout<<"i: "<<i<<", "<<percentage<<endl;
-                cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
+                cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
                 max_percentage = percentage;
 
                 R = R_i;
@@ -265,7 +255,7 @@ public:
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
             if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
+                cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
                 max_percentage = percentage;
 
                 R = R_i;
@@ -291,7 +281,7 @@ public:
         float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
 
         if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-            cur_err = weightedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
+            cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
             max_percentage = percentage;
 
             R = R_i;
@@ -301,31 +291,33 @@ public:
             sendFeedback(max_percentage, cur_err);
         }
 
-        cout<<"Executed "<<itCt+1<<" icp iterations, error: "<<cur_err<<", max percentage: "<<max_percentage<<endl;
+        ROS_INFO("Executed %d icp iterations, error: %f, max percentage: %f", itCt+1, cur_err, max_percentage);
         return cur_err;
     }
 
+    // the modified ICP algorithm
     float local_pointcloud_alignment(MatrixXf *source_subclouds, MatrixXf const &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
-        int source_size = source_subclouds[0].cols();
+        // create variables and stuff..
+        int source_size = source_subclouds[0].cols(); // all subclouds have the same size
 
         float err_old;
         int itCt = 0;
-        int source_pos = 0;
+        int source_pos = 0; // denotes the currently used subsample of the source cloud
 
         MatrixXf correspondences(3, source_size);
         VectorXf distances(source_size);
         MatrixXf source_proj(3, source_size);
+        MatrixXf source_cloud;
         MatrixXf source_trimmed, correspondences_trimmed;
         MatrixXf R_old(3,3);
         VectorXf t_old(3);
         float s_old;
 
-        MatrixXf source_cloud = source_subclouds[source_pos];
-
+        // start ICP iteration
         while(itCt < MAX_ICP_IT) {
 
-            source_cloud = source_subclouds[source_pos % NUMBER_SUBCLOUDS];
+            source_cloud = source_subclouds[source_pos % NUMBER_SUBCLOUDS]; // update subsample of the source cloud
             itCt++;
 
             R_old = R;
@@ -334,18 +326,17 @@ public:
 
             apply_transformation(source_cloud, source_proj, R, t, s);
 
+            // E-Step: assign all projected source points their correspondence
             if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
                 return FLT_MAX;
             }
 
-            /*if (itCt  == 1) {
-                saveData(source_cloud, target_pointcloud, correspondences);
-            }*/
-
+            // discard all source-correspondence-pairs which distance is too high
             if (trim_pointcloud(source_cloud, correspondences, distances, source_trimmed, correspondences_trimmed) == false) {
                 return FLT_MAX;
             }
 
+            // M-Step: minimize distance between source and correspondence points
             if (find_transformation(source_trimmed, correspondences_trimmed, R, t, s) == false) {
                 return FLT_MAX;
             }
@@ -364,17 +355,18 @@ public:
                     }
                 }
                 source_pos++;
-
             }
         }
 
         return calc_error(source_subclouds[0], target_pointcloud, R, t, s);
     }
 
+    // calculates the percentage of points which distance to their nearest neighbor is smaller than the evaluation threshold
     float calc_overlapping_percentage(MatrixXf const &source_cloud, MatrixXf const &target_cloud, MatrixXf const &R, MatrixXf const &t, float s) {
         return (((float) pointsLowerThanThreshold(source_cloud, target_cloud, R, t, s)) / ((float) source_cloud.cols()));
     }
 
+    // calculates the number of points which distance to their nearest neighbor is smaller than the evaluation threshold
     int pointsLowerThanThreshold(MatrixXf const &source_cloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const& t, float s) {
         MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
         apply_transformation(source_cloud, source_proj, R, t, s);
@@ -395,6 +387,7 @@ public:
         return number;
     }
 
+    // discards all source-correspondence pairs which distance is higher than the distance threshold
     bool trim_pointcloud(MatrixXf const &pointcloud, MatrixXf const &correspondences, VectorXf const &distances, MatrixXf &pointcloud_trimmed, MatrixXf &correspondences_trimmed) {
 
         int min_valid_points = (int) (MIN_OVERLAPPING_PERCENTAGE*((float) pointcloud.cols()));
@@ -441,6 +434,7 @@ public:
         return true;
     }
 
+    // assigns all points from the source cloud their nearest neighbor from the target cloud
     bool find_correspondences(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud , MatrixXf &correspondences, VectorXf &distances) {
         pcl::PointXYZ searchPoint;
 
@@ -469,6 +463,7 @@ public:
         return true;
     }
 
+    // minimizes the sum of squared distances between the source-correspondence pairs by optimizing the transformation parameters
     bool find_transformation(MatrixXf const &pointcloud, MatrixXf const &correspondences, MatrixXf &R, VectorXf &t, float &s) {
         VectorXf mean1 = pointcloud.array().rowwise().mean();
         VectorXf mean2 = correspondences.array().rowwise().mean();
@@ -521,11 +516,13 @@ public:
         return parametersValid(R,t,s);
     }
 
+    // applies the current transformation T(R,t,s) to the given pointcloud
     void apply_transformation(MatrixXf const &pointcloud, MatrixXf &pointcloud_proj, MatrixXf const &R, VectorXf const &t, float s) {
         pointcloud_proj = s*R*pointcloud;
         pointcloud_proj = pointcloud_proj.array().colwise() + t.array();
     }
 
+    // calculates the sum of least squares error between the source points and their nearest neighbors in the target cloud
     float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
 
         MatrixXf source_proj(3, source_pointcloud.cols());
@@ -551,16 +548,19 @@ public:
         return err;
     }
 
+    // sorts the given vector in increasing order
     void sort(VectorXf &v) {
       std::sort(v.data(), v.data()+v.size());
     }
 
+    // converts the Eigen matrix to a vector
     VectorXf matrixToVector(MatrixXf m) {
         m.transposeInPlace();
         VectorXf v(Map<VectorXf>(m.data(), m.cols()*m.rows()));
         return v;
     }
 
+    // splits the given cube of the octree into eight subcubes
     Cube **splitCube(Cube *cube) {
         Cube **subcubes = new Cube*[8];
         VectorXf offset(3);
@@ -580,6 +580,7 @@ public:
         return subcubes;
     }
 
+    // returns the number of cubes in the priority queue with the given depth
     int depthNumber(PriorityQueue *Q, int depth) {
         int ct = 0;
         QueueElement *tmp = Q->head;
@@ -592,6 +593,7 @@ public:
         return ct;
     }
 
+    // permutes the numbers between start and end
     int *getPermutation(int start, int end) {
         int length = end-start+1;
 
@@ -609,7 +611,8 @@ public:
         return permutation;
     }
 
-    Cube **createPriorityQueue(int &queueLength) {
+    // initalizes a new priority queue with all cubes up to MAX_DEPTH and returns its length
+    Cube **initPriorityQueue(int &queueLength) {
         PriorityQueue *Q = createQueue();
 
         VectorXf r0_init(3);
@@ -637,7 +640,7 @@ public:
         return priorityQueue;
     }
 
-
+    // fills given priority queue with all cubes of the current depth
     void fillPriorityQueue(PriorityQueue *Q, Cube *cube, int curDepth, int MAX_DEPTH) {
         float vecLength = sqrt(cube->r0[0]*cube->r0[0] + cube->r0[1]*cube->r0[1] + cube->r0[2]*cube->r0[2]);
 
@@ -654,12 +657,14 @@ public:
         }
     }
 
+    // allocate queue memory
     PriorityQueue *createQueue() {
         PriorityQueue *queue = new PriorityQueue;
         queue->head = NULL;
         return queue;
     }
 
+    // insert a new cube into the priority quene at
     void insert(PriorityQueue *queue, Cube *cube) {
         if (queue == NULL) {
             perror("queue == NULL");
@@ -694,6 +699,7 @@ public:
         }
     }
 
+    // deletes the priority queue
     void deleteQueue(PriorityQueue *queue) {
         if (queue == NULL)
             return;
@@ -708,6 +714,7 @@ public:
         delete(queue);
     }
 
+    // returns the length of the priority queue
     int length(PriorityQueue *queue) {
         if (queue == NULL || queue->head == NULL)
             return 0;
@@ -721,6 +728,7 @@ public:
         return counter;
     }
 
+    // extracts the first element from the prioirty queue and removes it from the queue
     Cube *extractFirstElement(PriorityQueue *queue) {
         if (queue == NULL || queue->head == NULL)
             return NULL;
@@ -733,6 +741,7 @@ public:
         return cube;
     }
 
+    // returns the passed time since start
     float getPassedTime(struct timeval start) {
         struct timeval end;
         gettimeofday(&end, NULL);
@@ -740,6 +749,7 @@ public:
         return (float) (((1.0/1000)*((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec)))/1000.);
     }
 
+    // returns the Angle-Axis rotation matrix for the given vector
     MatrixXf getAARot(VectorXf &r) {
         MatrixXf R = MatrixXf::Identity(3,3);
 
@@ -759,6 +769,7 @@ public:
         return R;
     }
 
+    // creates a new cube with given half_edge length, r0 and depth
     Cube* createCube(VectorXf r0, float half_edge_length, int depth) {
         Cube *C = new Cube;
         C->r0 = r0;
@@ -768,6 +779,7 @@ public:
         return C;
     }
 
+    // compares two cubes and states which of the two cubes has to be searched first (lower depth is better)
     bool betterThan(Cube *cube1, Cube *cube2) {
         if (cube1->depth < cube2->depth) {
             return true;
@@ -778,6 +790,7 @@ public:
         }
     }
 
+    // updates the kdTree with the given point cloud
     void createKdTree(MatrixXf &pointcloud) {
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr target_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
@@ -797,6 +810,7 @@ public:
         targetKdTree.setInputCloud(target_pcl_pointcloud);
     }
 
+    // returns a subcloud of the given point cloud with number_points in it by a random sampling procedure
     MatrixXf random_filter(MatrixXf &pointcloud, int number_points) {
         if (pointcloud.cols() <= number_points) {
             return pointcloud;
@@ -819,6 +833,7 @@ public:
         return filtered_pointcloud;
     }
 
+    // returns a Euler rotation matrix for the given parameters
     MatrixXf getRotationMatrix(float xRot, float yRot, float zRot) {
         MatrixXf R(3,3);
 
@@ -829,7 +844,8 @@ public:
         return R;
     }
 
-    MatrixXf preprocessSourcePointcloud(sensor_msgs::PointCloud2 source_msg, float &max_radius) {
+    // preprocesses the source pointcloud: convertes it to a Eigen matrix and calculates the maximum radius between points in the source cloud
+    MatrixXf preprocessSourcePointcloud(sensor_msgs::PointCloud2 source_msg) {
         boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_source (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(source_msg , *pointcloud_source);
 
@@ -853,7 +869,9 @@ public:
         return source_pointcloud;
     }
 
-    MatrixXf preprocessTargetPointcloud(sensor_msgs::PointCloud2 target_msg, float max_radius, geometry_msgs::PoseStamped initial_pose) {
+    // preprocesses the target pointcloud: convertes it to a Eigen matrix, discards all points that are too far away from the inital position (depending of the max_radius)
+    // and removes the plane if chosen
+    MatrixXf preprocessTargetPointcloud(sensor_msgs::PointCloud2 target_msg, geometry_msgs::PoseStamped initial_pose) {
         boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_target (new pcl::PointCloud<pcl::PointXYZ>());
         pcl::fromROSMsg(target_msg, *pointcloud_target);
 
@@ -867,7 +885,7 @@ public:
 
 
         if (REMOVE_PLANE == 1) {
-            cout<<"removing plane"<<endl;
+            ROS_INFO("removing plane");
             target_pointcloud = removePlane(target_pointcloud);
         }
 
@@ -907,6 +925,7 @@ public:
         return target_pointcloud_new;
     }
 
+    // returns the chosen number of subsamples of the source cloud
     MatrixXf *subsample_source_cloud(MatrixXf source_pointcloud, float size_source) {
         MatrixXf *source_subclouds = new MatrixXf[NUMBER_SUBCLOUDS];
 
@@ -916,6 +935,7 @@ public:
         return source_subclouds;
     }
 
+    // removes the biggest plane from the given pointcloud
     MatrixXf removePlane(MatrixXf &pointcloud) {
           pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pointcloud(new pcl::PointCloud<pcl::PointXYZ>);
 
@@ -976,18 +996,21 @@ public:
           return new_pointcloud;
     }
 
+    // sends feedback to the client
     void sendFeedback(float percentage, float err) {
         feedback_.aligned_percentage = percentage;
         feedback_.normalized_error = err;
         as_.publishFeedback(feedback_);
     }
 
-    float weightedError(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf R, VectorXf t, float s) {
+    // calculates the normalized per-point error
+    float normalizedError(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf R, VectorXf t, float s) {
         int n_points = pointsLowerThanThreshold(source_pointcloud, target_pointcloud,R,t,s);
         float err = calc_error(source_pointcloud, target_pointcloud, R, t, s);
         return err /= ((float) n_points);
     }
 
+    // states if the given rotation matrix is a valid one
     bool rotationIsValid(MatrixXf R) {
         if (abs(R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
             return false;
@@ -995,6 +1018,7 @@ public:
         return true;
     }
 
+    // validates all transformation parameters
     bool parametersValid(MatrixXf R, VectorXf t, float s) {
         for (int i = 0; i < R.rows(); i++) {
             for (int j = 0; j < R.cols(); j++) {
@@ -1018,7 +1042,8 @@ public:
     }
 
     void initializeParameters() {
-        DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
+        //DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
+        DISTANCE_THRESHOLD_FACTOR = getFloatParameter("distance_threshold_factor");
         MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
         TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
         NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
@@ -1074,6 +1099,7 @@ public:
         }
     }
 
+    // states if the time-dependent stop-criterion has been fulfilled
     bool stopCriterionFulfilled(float passedTime, float overlapping_percentage) {
         float min_percentage = exp(-DAMPING_COEFFICIENT*(passedTime - DELAY_FACTOR))*100;
 
@@ -1104,22 +1130,15 @@ public:
     }
 
     void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
-        cout<<"printing distances to file"<<endl;
-        cout<<"source_cloud size "<<source_cloud.size()<<endl;
-        cout<<"targetcloud size "<<target_cloud.size()<<endl;
-        cout<<"R: "<<endl<<R<<endl<<"t: "<<endl<<t<<endl<<"s: "<<endl<<s<<endl;
         MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
         apply_transformation(source_cloud, source_proj, R, t , s);
-        cout<<"nach apply transformation"<<endl;
         MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
         VectorXf distances(source_cloud.cols());
 
-        cout<<"vor find correspondences"<<endl;
         if (find_correspondences(source_proj, target_cloud, correspondences, distances) == false) {
             return;
         }
 
-        cout<<"opening file"<<endl;
 
         ofstream file;
 
@@ -1134,12 +1153,10 @@ public:
 
         file.close();
 
-        cout<<"finished printing distances"<<endl;
     }
 
     void visualizePointcloud(MatrixXf pointcloud) {
         pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
 
         // Generate pointcloud data
         pointcloud_pcl->width = pointcloud.cols();
@@ -1165,37 +1182,6 @@ public:
             pointcloud2(1,i) = pointcloud2(1,i)+2;
             pointcloud2(2,i) = pointcloud2(2,i)+0.5;
         }
-
-
-        /*// Generate pointcloud data
-        pointcloud1_pcl->width = pointcloud1.cols();
-        pointcloud1_pcl->height = 1;
-        pointcloud1_pcl->points.resize (pointcloud1_pcl->width * pointcloud1_pcl->height);
-
-        for (size_t i = 0; i < pointcloud1_pcl->points.size (); ++i) {
-            pointcloud1_pcl->points[i].x = pointcloud1(0,i);
-            pointcloud1_pcl->points[i].y = pointcloud1(1,i);
-            pointcloud1_pcl->points[i].z = pointcloud1(2,i);
-        }
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud2_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
-
-        // Generate pointcloud data
-        pointcloud2_pcl->width = pointcloud2.cols();
-        pointcloud2_pcl->height = 1;
-        pointcloud2_pcl->points.resize (pointcloud2_pcl->width * pointcloud2_pcl->height);
-
-        for (size_t i = 0; i < pointcloud2_pcl->points.size (); ++i) {
-            pointcloud2_pcl->points[i].x = pointcloud2(0,i);
-            pointcloud2_pcl->points[i].y = pointcloud2(1,i);
-            pointcloud2_pcl->points[i].z = pointcloud2(2,i);
-        }
-
-        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
-        viewer.showCloud (pointcloud1_pcl);
-        viewer.showCloud (pointcloud2_pcl);
-        while (!viewer.wasStopped ()) {}*/
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
 
