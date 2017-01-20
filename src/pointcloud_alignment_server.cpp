@@ -37,6 +37,9 @@
 
 #include <pcl/visualization/cloud_viewer.h>
 
+#include <pcl/features/normal_3d.h>
+
+#include <pcl/point_types.h>
 
 using namespace Eigen;
 using namespace std;
@@ -71,11 +74,15 @@ protected:
 
 public:
 
+    typedef pcl::PointCloud<pcl::Normal> SurfaceNormals;
+     typedef pcl::search::KdTree<pcl::PointXYZ> SearchMethod;
+
     float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR, DISTANCE_THRESHOLD_FACTOR, max_radius;
-    int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE;
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR, max_radius;
+    int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE, MAX_ICP_EVALUATIONS;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
+    pcl::KdTreeFLANN<pcl::PointXYZ> sourceKdTree;
 
     PointcloudAlignmentAction(std::string name) :
         as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
@@ -155,7 +162,6 @@ public:
     // evaluates the command parameter and calls the local or global point cloud alignment algorithm
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
         // set evaluation threshold
-        DISTANCE_THRESHOLD = DISTANCE_THRESHOLD_FACTOR * max_radius;
 
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
             ROS_ERROR("source or target pointcloud is zero");
@@ -168,9 +174,12 @@ public:
 
             MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
             MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
-            createKdTree(target_subcloud);
-
-            return  local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
+            createTargetKdTree(target_subcloud);
+            float err = local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
+            float al_per = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_icp, t_icp, s_icp);
+            float no_err = normalizedError(source_subclouds[0], target_subcloud , R_icp, t_icp, s_icp);
+            cout<<"err: "<<no_err<<" al_per: "<<al_per<<endl;
+            return  err;
         } else  if (command == 1) { // execute global pointcloud alignment
             ROS_INFO("executing global icp");
             return global_pointcloud_alignment(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
@@ -183,7 +192,7 @@ public:
     // the global search procedure
     float global_pointcloud_alignment(MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
 
-        // set up parameters
+        // set up parameters, kdTree, ...
         struct timeval start;
         gettimeofday(&start, NULL);
 
@@ -196,20 +205,23 @@ public:
 
         int itCt = 0;
         float cur_err = FLT_MAX;
-        float max_percentage = FLT_MIN;
+        float cur_percentage = FLT_MIN;
 
         MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
+        createSourceKdTree(source_subclouds[0]);
 
         MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
-        createKdTree(target_subcloud);
+        createTargetKdTree(target_subcloud);
+
+        float best_quality = FLT_MAX;
 
 
         // process priority queue
         int i = 0;
-        #pragma omp parallel for shared(cur_err, R, t, s, i, max_percentage, itCt)
+        #pragma omp parallel for shared(cur_err, R, t, s, i, cur_percentage, itCt, best_quality)
         for (i = 0; i < queueLength; i++) {
 
-            if (i > 0 && stopCriterionFulfilled(getPassedTime(start), max_percentage)) {
+            if (i > MAX_ICP_EVALUATIONS || (i > 0 && stopCriterionFulfilled(getPassedTime(start), cur_percentage))) {
                 continue;
             }
 
@@ -220,16 +232,21 @@ public:
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
+            float ppe = per_point_error(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
 
-            if (percentage > max_percentage && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
-                max_percentage = percentage;
+            float quality = eval_quality(percentage, ppe);
+
+            if (quality < best_quality && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
+                cur_err = ppe;
+                cur_percentage = percentage;
+
+                best_quality = quality;
 
                 R = R_i;
                 t = t_i;
                 s = s_i;
 
-                sendFeedback(max_percentage, cur_err);
+                sendFeedback(cur_percentage, cur_err);
             }
 
             itCt++;
@@ -244,7 +261,7 @@ public:
         R_sym[1] = R*getRotationMatrix(0,M_PI,0);
         R_sym[2] = R*getRotationMatrix(0,0,M_PI);
 
-        #pragma omp parallel for shared(cur_err, R, t, s, i, max_percentage, itCt)
+        #pragma omp parallel for shared(cur_err, R, t, s, i, cur_percentage, itCt)
         for (int i = 0; i < 3; i++) {
             MatrixXf R_i = R_sym[i];
             VectorXf t_i = t_init;
@@ -253,16 +270,21 @@ public:
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
+            float ppe = per_point_error(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
 
-            if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-                cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
-                max_percentage = percentage;
+            float quality = eval_quality(percentage, ppe);
+
+            if (quality < best_quality && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
+                cur_err = ppe;
+                cur_percentage = percentage;
+
+                best_quality = quality;
 
                 R = R_i;
                 t = t_i;
                 s = s_i;
 
-                sendFeedback(max_percentage, cur_err);
+                sendFeedback(cur_percentage, cur_err);
             }
 
             itCt++;
@@ -271,29 +293,227 @@ public:
         // execute final local icp iteration with more points for more accuracy
         source_subclouds = subsample_source_cloud(source_pointcloud, REFINEMENT_ICP_SOURCE_SIZE);
         target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
-        createKdTree(target_subcloud);
+        createTargetKdTree(target_subcloud);
 
         MatrixXf R_i = R;
         VectorXf t_i = t;
         float s_i = s;
         local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
-        float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
-
-        if (percentage > max_percentage && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
-            cur_err = normalizedError(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
-            max_percentage = percentage;
-
+        if (rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
+            cur_percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
+            cur_err = per_point_error(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
             R = R_i;
             t = t_i;
             s = s_i;
 
-            sendFeedback(max_percentage, cur_err);
+            sendFeedback(cur_percentage, cur_err);
         }
 
-        ROS_INFO("Executed %d icp iterations, error: %f, max percentage: %f", itCt+1, cur_err, max_percentage);
+        ROS_INFO("Executed %d icp iterations, per-point error: %f, aligned percentage: %f.", itCt+1, cur_err, cur_percentage);
         return cur_err;
     }
+
+    float eval_quality(float percentage, float ppe) {
+        return (1.-percentage)*ppe;
+    }
+
+    /*float inverse_distance_loss(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        float ALPHA = 0.5;
+
+        float error = 0;
+        for (int i = 0; i < distances.rows(); i++) {
+            //error += 1.0f/(1.0f + ALPHA*distances[i]*distances[i]);
+            if (distances[i] < EVALUATION_THRESHOLD) {
+                error += distances[i]*distances[i];
+            } else {
+                error += EVALUATION_THRESHOLD*EVALUATION_THRESHOLD;
+            }
+        }
+
+        return error;
+    }*/
+
+    /*float skewed_gaussian_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        float error = 0;
+        for (int i = 0; i < distances.rows(); i++) {
+            //error += 1.0f/(1.0f + ALPHA*distances[i]*distances[i]);
+            if (distances[i] < MU) {
+                error += (1.0f/(SIGMA1*sqrt(2.0f*M_PI)))*exp(-0.5f*((((distances[i]-MU)/SIGMA1))*((distances[i]-MU)/SIGMA1)));
+            } else {
+                error += ((1.0f/(SIGMA2*sqrt(2.0f*M_PI)))*exp(-0.5f*((((distances[i]-MU)/SIGMA2))*((distances[i]-MU)/SIGMA2))))/(SIGMA2/SIGMA1);
+            }
+        }
+
+        return error;
+    }*/
+
+    /*float normalsPenalty(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+        SurfaceNormals::Ptr source_normals, correspondence_normals;
+
+
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        computeSurfaceNormals(source_pointcloud, source_normals);
+        computeSurfaceNormals(correspondences, correspondence_normals);
+
+        for (int i = 0; i < distances.rows(); i++) {
+            if (distances(i) < EVALUATION_THRESHOLD) {
+
+                cout<<correspondence_normals->points.at(i)<<endl;
+                Eigen::Map<Eigen::Matrix<float, 3, 1> > c_normal = correspondence_normals->points.at(i).getNormalVector3fMap();
+                cout<<"normal: "<<c_normal(0,0)<<" "<<c_normal(1,0)<<" "<<c_normal(2,0)<<endl;
+
+                Eigen::Map<Eigen::Matrix<float, 3, 1> > s_normal = source_normals->points.at(i).getNormalVector3fMap();
+                cout<<"normal: "<<s_normal(0,0)<<" "<<s_normal(1,0)<<" "<<s_normal(2,0)<<endl;
+            }
+        }
+    }*/
+
+    /*bool calcNormals(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf &surfaces, MatrixXf const &R, VectorXf const & t, float s) {
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return false;
+        }
+
+        surfaces = MatrixXf(source_pointcloud.rows(), source_pointcloud.cols());
+
+        for (int i = 0; i  < distances.rows(); i++) {
+            if (distances(i) < EVALUATION_THRESHOLD) {
+                
+            }
+        }
+
+        return true;
+    }*/
+
+    /*void computeSurfaceNormals(MatrixXf pointcloud, SurfaceNormals::Ptr &normals) {
+        SearchMethod::Ptr normals_search_method(new SearchMethod);
+        float normal_radius = 0.4;
+
+        normals = SurfaceNormals::Ptr (new SurfaceNormals);
+
+        pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> norm_est;
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pointcloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+        pcl_pointcloud->width  = pointcloud.cols();
+        pcl_pointcloud->height = 1;
+        pcl_pointcloud->points.resize(pcl_pointcloud->width * pcl_pointcloud->height);
+
+        for (int i = 0; i < pointcloud.cols(); i++) {
+            pcl_pointcloud->points[i].x = pointcloud(0,i);
+            pcl_pointcloud->points[i].y = pointcloud(1,i);
+            pcl_pointcloud->points[i].z = pointcloud(2,i);
+        }
+
+        norm_est.setInputCloud (pcl_pointcloud);
+        norm_est.setSearchMethod (normals_search_method);
+
+        norm_est.setRadiusSearch (normal_radius);
+        norm_est.compute (*normals);
+    }*/
+
+    /*float student_t_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        float SIGMA = 1;
+
+        float error = 0;
+        for (int i = 0; i < distances.rows(); i++) {
+            error += log(1.0f + (1.0f/(2.0f*SIGMA*SIGMA))+distances[i]*distances[i]);
+        }
+
+        return error;
+    }*/
+
+    /*float surface_penalty(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        bool *outliers = new bool[distances.rows()];
+        for (int i = 0; i < distances.rows(); i++) {
+            if (distances(i) < EVALUATION_THRESHOLD) {
+                outliers[i] = false;
+            } else {
+                outliers[i] = true;
+            }
+        }
+
+        pcl::PointXYZ searchPoint;
+        int N_NEIGHBOURS = 5;
+        int n_p = 0;
+
+        int tmp = 0;
+        for (int i = 0; i < distances.rows(); i++) {
+            if (distances(i) < EVALUATION_THRESHOLD) {
+                n_p++;
+
+                searchPoint.x = source_pointcloud(0,i);
+                searchPoint.y = source_pointcloud(1,i);
+                searchPoint.z = source_pointcloud(2,i);
+
+                if ((isnormal(searchPoint.x) == 0 && searchPoint.x != 0) ||
+                    (isnormal(searchPoint.y) == 0 && searchPoint.y != 0) ||
+                    (isnormal(searchPoint.z) == 0 && searchPoint.z != 0)) {
+                    return false;
+                }
+
+                std::vector<int> pointIdxNKNSearch(N_NEIGHBOURS);
+                std::vector<float> pointNKNSquaredDistance(N_NEIGHBOURS);
+                if (sourceKdTree.nearestKSearch (searchPoint, N_NEIGHBOURS, pointIdxNKNSearch, pointNKNSquaredDistance) > 0) {
+                    for (size_t i = 0; i < pointIdxNKNSearch.size(); ++i) {
+                        tmp += outliers[pointIdxNKNSearch[i]];
+                    }
+                }
+            }
+        }
+
+        return ((float) tmp) / ((float) n_p);
+    }*/
 
     // the modified ICP algorithm
     float local_pointcloud_alignment(MatrixXf *source_subclouds, MatrixXf const &target_pointcloud, MatrixXf &R, VectorXf &t, float &s) {
@@ -346,18 +566,18 @@ public:
             if ((R-R_old).norm() + (t-t_old).norm() + abs(s-s_old) < ICP_EPS) {
                 if (source_pos == 0) {
                     err_old = calc_error(source_cloud, target_pointcloud, R, t, s);
-                } else if (source_pos % 5 == 0) {
-                    float err = calc_error(source_cloud, target_pointcloud, R, t, s);
-                    if (abs(err-err_old) < ICP_EPS2) {
+                } else if (source_pos % NUMBER_SUBCLOUDS == 0) {
+                    if ((R-R_old).norm() + (t-t_old).norm() + abs(s-s_old) < ICP_EPS2) {
                         break;
                     } else {
-                        err_old = err;
+                        err_old = calc_error(source_cloud, target_pointcloud, R, t, s);;
                     }
                 }
                 source_pos++;
             }
         }
 
+        cout<<"ICP iterations: "<<itCt<<endl;
         return calc_error(source_subclouds[0], target_pointcloud, R, t, s);
     }
 
@@ -403,9 +623,9 @@ public:
             number_inliers = min_valid_points;
         }
 
-        if (number_inliers == 0) {
+        /*if (number_inliers == 0) {
             return false;
-        }
+        }*/
 
         pointcloud_trimmed = MatrixXf(3,number_inliers);
         correspondences_trimmed = MatrixXf(3, number_inliers);
@@ -509,7 +729,7 @@ public:
 
         s = (((float) tmp1.rows())*((float) tmp1.cols())*tmp1.norm()) / (((float) tmp2.rows())*((float) tmp2.cols())*tmp2.norm());
 
-        s = 1.;
+        s = 1.0f;
 
         t = mean2 - s*R*mean1;
 
@@ -521,6 +741,37 @@ public:
         pointcloud_proj = s*R*pointcloud;
         pointcloud_proj = pointcloud_proj.array().colwise() + t.array();
     }
+
+    // calculates the sum-of-least-squares of all inliers and divides it by the number of inliers
+    float per_point_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
+        MatrixXf source_proj(3, source_pointcloud.cols());
+        MatrixXf correspondences(3, source_pointcloud.cols());
+        VectorXf distances(source_pointcloud.cols());
+
+        apply_transformation(source_pointcloud, source_proj, R, t, s);
+        if (find_correspondences(source_proj, target_pointcloud, correspondences, distances) == false) {
+            return FLT_MAX;
+        }
+
+        MatrixXf diff = source_proj - correspondences;
+
+        float err = 0;
+        int n_p = 0;
+
+        for (int i = 0; i < distances.rows(); i++) {
+            if (distances(i) < EVALUATION_THRESHOLD) {
+                err += diff(0,i)*diff(0,i) + diff(1,i)*diff(1,i) + diff(2,i)*diff(2,i);
+                n_p++;
+            }
+        }
+
+        if (n_p == 0) {
+            return FLT_MAX;
+        }
+
+        return sqrt(err) / ((float) n_p);
+    }
+
 
     // calculates the sum of least squares error between the source points and their nearest neighbors in the target cloud
     float calc_error(MatrixXf const &source_pointcloud, MatrixXf const &target_pointcloud, MatrixXf const &R, VectorXf const &t, float s) {
@@ -542,10 +793,10 @@ public:
         float err = 0;
         for (int i = 0; i < diff.cols(); i++) {
 
-            err += sqrt(diff(0,i)*diff(0,i) + diff(1,i)*diff(1,i) + diff(2,i)*diff(2,i));
+            err += diff(0,i)*diff(0,i) + diff(1,i)*diff(1,i) + diff(2,i)*diff(2,i);
         }
 
-        return err;
+        return sqrt(err);
     }
 
     // sorts the given vector in increasing order
@@ -791,7 +1042,7 @@ public:
     }
 
     // updates the kdTree with the given point cloud
-    void createKdTree(MatrixXf &pointcloud) {
+    void createTargetKdTree(MatrixXf &pointcloud) {
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr target_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
 
@@ -808,6 +1059,25 @@ public:
         }
 
         targetKdTree.setInputCloud(target_pcl_pointcloud);
+    }
+
+    void createSourceKdTree(MatrixXf &pointcloud) {
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr source_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
+
+        // Fill in the cloud data
+        source_pcl_pointcloud->width    = pointcloud.cols();
+        source_pcl_pointcloud->height   = 1;
+        source_pcl_pointcloud->is_dense = false;
+        source_pcl_pointcloud->points.resize(source_pcl_pointcloud->width * source_pcl_pointcloud->height);
+
+        for (int i = 0; i < pointcloud.cols(); i++) {
+            source_pcl_pointcloud->points[i].x = pointcloud(0, i);
+            source_pcl_pointcloud->points[i].y = pointcloud(1, i);
+            source_pcl_pointcloud->points[i].z = pointcloud(2, i);
+        }
+
+        sourceKdTree.setInputCloud(source_pcl_pointcloud);
     }
 
     // returns a subcloud of the given point cloud with number_points in it by a random sampling procedure
@@ -1042,8 +1312,7 @@ public:
     }
 
     void initializeParameters() {
-        //DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
-        DISTANCE_THRESHOLD_FACTOR = getFloatParameter("distance_threshold_factor");
+        DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
         MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
         TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
         NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
@@ -1065,6 +1334,7 @@ public:
         DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
         DELAY_FACTOR = getFloatParameter("delay_factor");
         REMOVE_PLANE = getIntegerParameter("remove_plane");
+        MAX_ICP_EVALUATIONS = getIntegerParameter("max_icp_evaluations");
     }
 
     float getFloatParameter(string parameter_name) {
@@ -1089,7 +1359,7 @@ public:
           int val;
           nh_.getParam(key, val);
 
-          ROS_INFO("%s:%d", parameter_name.c_str(), val);
+          ROS_INFO("%s: %d", parameter_name.c_str(), val);
 
           return val;
         } else {
@@ -1101,7 +1371,7 @@ public:
 
     // states if the time-dependent stop-criterion has been fulfilled
     bool stopCriterionFulfilled(float passedTime, float overlapping_percentage) {
-        float min_percentage = exp(-DAMPING_COEFFICIENT*(passedTime - DELAY_FACTOR))*100;
+        float min_percentage = (float) exp(-DAMPING_COEFFICIENT*(passedTime - DELAY_FACTOR))*100.;
 
         if (min_percentage < overlapping_percentage) {
             return true;
