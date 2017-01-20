@@ -4,8 +4,8 @@ lambda: 27000
 evaluation_threshold: 0.02
 min_overlapping_percentage: 0.15
 target_radius_factor: 5
-number_subclouds: 14
-size_source: 400
+number_subclouds: 15
+size_source: 250
 size_target: 2000
 refinement_icp_source_size: 500
 refinement_icp_target_size: 2000
@@ -22,4 +22,4 @@ max_percentage: 0.7
 damping_coefficient: 3
 delay_factor: 0.2
 remove_plane: 1
-max_icp_evaluations: 15
+max_icp_evaluations: 10
