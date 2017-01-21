@@ -77,8 +77,8 @@ public:
     typedef pcl::PointCloud<pcl::Normal> SurfaceNormals;
      typedef pcl::search::KdTree<pcl::PointXYZ> SearchMethod;
 
-    float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, MAX_PERCENTAGE, DAMPING_COEFFICIENT, DELAY_FACTOR, max_radius;
+    float DISTANCE_THRESHOLD, DISTANCE_THRESHOLD_FACTOR, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, DAMPING_COEFFICIENT, DELAY_FACTOR, MAX_RADIUS;
     int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE, MAX_ICP_EVALUATIONS;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
@@ -161,7 +161,11 @@ public:
 
     // evaluates the command parameter and calls the local or global point cloud alignment algorithm
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
+
         // set evaluation threshold
+        if (DISTANCE_THRESHOLD_FACTOR > 0) {
+            DISTANCE_THRESHOLD = DISTANCE_THRESHOLD_FACTOR * MAX_RADIUS;
+        }
 
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
             ROS_ERROR("source or target pointcloud is zero");
@@ -178,7 +182,6 @@ public:
             float err = local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
             float al_per = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_icp, t_icp, s_icp);
             float no_err = normalizedError(source_subclouds[0], target_subcloud , R_icp, t_icp, s_icp);
-            cout<<"err: "<<no_err<<" al_per: "<<al_per<<endl;
             return  err;
         } else  if (command == 1) { // execute global pointcloud alignment
             ROS_INFO("executing global icp");
@@ -924,7 +927,7 @@ public:
 
         MatrixXf source_pointcloud = MatrixXf(3,pointcloud_source->size());
 
-        max_radius = FLT_MIN;
+        MAX_RADIUS = FLT_MIN;
 
         for (int i = 0; i < pointcloud_source->size(); i++) {
             source_pointcloud(0,i) = pointcloud_source->at(i).x;
@@ -934,15 +937,15 @@ public:
             float radius = sqrt(pointcloud_source->at(i).x*pointcloud_source->at(i).x +
                                 pointcloud_source->at(i).y*pointcloud_source->at(i).y +
                                 pointcloud_source->at(i).z*pointcloud_source->at(i).z);
-            if (radius > max_radius) {
-                max_radius = radius;
+            if (radius > MAX_RADIUS) {
+                MAX_RADIUS = radius;
             }
         }
 
         return source_pointcloud;
     }
 
-    // preprocesses the target pointcloud: convertes it to a Eigen matrix, discards all points that are too far away from the inital position (depending of the max_radius)
+    // preprocesses the target pointcloud: convertes it to a Eigen matrix, discards all points that are too far away from the inital position (depending of the MAX_RADIUS)
     // and removes the plane if chosen
     MatrixXf preprocessTargetPointcloud(sensor_msgs::PointCloud2 target_msg, geometry_msgs::PoseStamped initial_pose) {
         boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_target (new pcl::PointCloud<pcl::PointXYZ>());
@@ -969,7 +972,7 @@ public:
                               pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
 
 
-            if (distToCenter < TARGET_RADIUS_FACTOR*max_radius) {
+            if (distToCenter < TARGET_RADIUS_FACTOR*MAX_RADIUS) {
                 target_size++;
             }
         }
@@ -986,7 +989,7 @@ public:
                               pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
                               pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
 
-            if (dist < TARGET_RADIUS_FACTOR*max_radius && pos < target_size) {
+            if (dist < TARGET_RADIUS_FACTOR*MAX_RADIUS && pos < target_size) {
                 target_pointcloud_new(0,pos) = target_pointcloud(0,i);
                 target_pointcloud_new(1,pos) = target_pointcloud(1,i);
                 target_pointcloud_new(2,pos) = target_pointcloud(2,i);
@@ -1116,6 +1119,7 @@ public:
 
     void initializeParameters() {
         DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
+        DISTANCE_THRESHOLD_FACTOR = getFloatParameter("distance_threshold_factor");
         MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
         TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
         NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
@@ -1133,7 +1137,6 @@ public:
         MAX_ICP_IT = getIntegerParameter("max_icp_it");
         ICP_EPS2 = getFloatParameter("icp_eps2");
         MAX_NUMERICAL_ERROR = getFloatParameter("max_numerical_error");
-        MAX_PERCENTAGE = getFloatParameter("max_percentage");
         DAMPING_COEFFICIENT = getFloatParameter("damping_coefficient");
         DELAY_FACTOR = getFloatParameter("delay_factor");
         REMOVE_PLANE = getIntegerParameter("remove_plane");

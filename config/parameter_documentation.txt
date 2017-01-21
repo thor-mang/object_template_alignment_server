@@ -1,0 +1,47 @@
+distance_threshold [m]: Distance for the nearest neighbour search of the ICP algorithm.
+
+distance_threshold_factor: The distance_threshold can be computed in relation to the size of the object (distance_threshold = distance_threshold_facor * size_object). 
+If the distance_threshold should be set directly, this factor has to be set to a negative value.
+
+evaluation_threshold: Distance for the nearest neighbour search when calculating the overlapping_percentage.
+
+min_overlapping_percentage: If less points have a correspondence with a distance lower than min_overlapping_percentage, the points with the smallest distances are taken into account for the 
+minimization step.
+
+target_radius_factor: Denotes the radius around the initial position that defines which points are taken into account. The radius r is calculated by r = target_radius_factor * size_object.
+
+number_subclouds: The number of subsampled versions of the source cloud that are used for the ICP algorithm.
+
+size_source: Size of the subsampled source clouds used by the ICP algorithm.
+
+size_target: Size of the subsampled target cloud used by the ICP algorithm.
+
+refinement_icp_source_size: Size of the subsampled source clouds used for the final ICP evaluation to refine the result.
+
+refinement_icp_target_size: Size of the subsampled target cloud used for the final ICP evaluation to refine the result.
+
+min_plane_portion: Minimum percentage of points that are part of the plane that gets removed. 
+
+min_plane_distance [m]: Minimum distance of points to the estimated plane.
+
+min_scaling_factor: Minimum value of the scaling factor s.
+
+max_scaling_factor: Maximum value of the scaling factor s.
+
+max_depth: Maximum depth of the octree that is used to divide the rotation space.
+
+icp_eps: The ICP algorithm uses another source subcloud if the parameters change less that icp_eps.
+
+icp_eps2: The ICP algorithm uses different subclouds to avoid local minimum. If the parameters change less that icp_eps2 after using all subclouds the ICP algorithm is terminated.
+
+max_icp_it: Maximum number of iterations of the ICP algorithm.
+
+max_numerical_error: Maximum deviation of the rotation matrix to be regarded as a valid rotation matrix.
+
+damping_coefficient: Damping coeffient alpha of the time-dependent stop-criterion.
+
+delay_factor: Delay factor beta of the time-dependent stop-criterion.
+
+remove_plane: Denotes if the biggest estimated plane should be removed.
+
+max_icp_evaluations: Maximum number of ICP evaluations of the search strategy.
