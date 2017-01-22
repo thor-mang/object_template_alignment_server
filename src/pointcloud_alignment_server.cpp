@@ -35,12 +35,6 @@
 #include <pthread.h>
 
 
-#include <pcl/visualization/cloud_viewer.h>
-
-#include <pcl/features/normal_3d.h>
-
-#include <pcl/point_types.h>
-
 using namespace Eigen;
 using namespace std;
 
@@ -74,11 +68,8 @@ protected:
 
 public:
 
-    typedef pcl::PointCloud<pcl::Normal> SurfaceNormals;
-     typedef pcl::search::KdTree<pcl::PointXYZ> SearchMethod;
-
     float DISTANCE_THRESHOLD, DISTANCE_THRESHOLD_FACTOR, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, DAMPING_COEFFICIENT, DELAY_FACTOR, MAX_RADIUS;
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, DAMPING_COEFFICIENT, DELAY_FACTOR, MAX_RADIUS, LAMBDA;
     int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE, MAX_ICP_EVALUATIONS;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
@@ -127,6 +118,7 @@ public:
         // execute the pointcloud alignment algorithm
         find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
 
+        printDistances(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
 
         // send result to client
         geometry_msgs::Quaternion orientation;
@@ -224,7 +216,7 @@ public:
         #pragma omp parallel for shared(cur_err, R, t, s, i, cur_percentage, itCt, best_quality)
         for (i = 0; i < queueLength; i++) {
 
-            if (i > MAX_ICP_EVALUATIONS || (i > 0 && stopCriterionFulfilled(getPassedTime(start), cur_percentage))) {
+            if (i > MAX_ICP_EVALUATIONS-4 || (i > 0 && stopCriterionFulfilled(getPassedTime(start), cur_percentage))) {
                 continue;
             }
 
@@ -267,8 +259,8 @@ public:
         #pragma omp parallel for shared(cur_err, R, t, s, i, cur_percentage, itCt)
         for (int i = 0; i < 3; i++) {
             MatrixXf R_i = R_sym[i];
-            VectorXf t_i = t_init;
-            float s_i = s_init;
+            VectorXf t_i = t;
+            float s_i = s;
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
@@ -318,7 +310,7 @@ public:
     }
 
     float eval_quality(float percentage, float ppe) {
-        return (1.-percentage)*ppe;
+        return log(1.-percentage) + LAMBDA*log(ppe);
     }
 
     // the modified ICP algorithm
@@ -428,10 +420,6 @@ public:
         if (number_inliers < min_valid_points) {
             number_inliers = min_valid_points;
         }
-
-        /*if (number_inliers == 0) {
-            return false;
-        }*/
 
         pointcloud_trimmed = MatrixXf(3,number_inliers);
         correspondences_trimmed = MatrixXf(3, number_inliers);
@@ -1141,6 +1129,7 @@ public:
         DELAY_FACTOR = getFloatParameter("delay_factor");
         REMOVE_PLANE = getIntegerParameter("remove_plane");
         MAX_ICP_EVALUATIONS = getIntegerParameter("max_icp_evaluations");
+        LAMBDA = getIntegerParameter("lambda");
     }
 
     float getFloatParameter(string parameter_name) {
@@ -1186,109 +1175,43 @@ public:
         }
     }
 
-    // ******************************************************************************************************
-    // functions only necessary for debugging
-    // ******************************************************************************************************
 
-    void savePointcloud(MatrixXf pointcloud, string filename) {
-        ofstream file;
 
-        file.open(filename.c_str());
-        if (!file.is_open()) {
-            cout<<"Fehler beim oeffnen von "<<filename<<"!"<<endl;
-        }
 
-        for (int i = 0; i < pointcloud.cols(); i++) {
-            file << pointcloud(0,i)<<" "<<pointcloud(1,i)<<" "<<pointcloud(2,i) << endl;
-        }
 
-        file.close();
-    }
+
+
+
+
+
 
     void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
-        MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
-        apply_transformation(source_cloud, source_proj, R, t , s);
-        MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
-        VectorXf distances(source_cloud.cols());
+            MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
+            apply_transformation(source_cloud, source_proj, R, t , s);
+            MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
+            VectorXf distances(source_cloud.cols());
 
-        if (find_correspondences(source_proj, target_cloud, correspondences, distances) == false) {
-            return;
+            if (find_correspondences(source_proj, target_cloud, correspondences, distances) == false) {
+                return;
+            }
+
+
+            ofstream file;
+
+            file.open("/home/sebastian/Desktop/distances.txt");
+            if (!file.is_open()) {
+                cout<<"Fehler beim oeffnen von distances.txt!"<<endl;
+            }
+
+            for (int i = 0; i < distances.rows(); i++) {
+                file << distances(i) << endl;
+            }
+
+            file.close();
+
         }
-
-
-        ofstream file;
-
-        file.open("/home/sebastian/Desktop/distances.txt");
-        if (!file.is_open()) {
-            cout<<"Fehler beim oeffnen von distances.txt!"<<endl;
-        }
-
-        for (int i = 0; i < distances.rows(); i++) {
-            file << distances(i) << endl;
-        }
-
-        file.close();
-
-    }
-
-    void visualizePointcloud(MatrixXf pointcloud) {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
-        // Generate pointcloud data
-        pointcloud_pcl->width = pointcloud.cols();
-        pointcloud_pcl->height = 1;
-        pointcloud_pcl->points.resize (pointcloud_pcl->width * pointcloud_pcl->height);
-
-        for (size_t i = 0; i < pointcloud_pcl->points.size (); ++i) {
-            pointcloud_pcl->points[i].x = pointcloud(0,i);
-            pointcloud_pcl->points[i].y = pointcloud(1,i);
-            pointcloud_pcl->points[i].z = pointcloud(2,i);
-        }
-
-        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
-        viewer.showCloud (pointcloud_pcl);
-        while (!viewer.wasStopped ()) {}
-    }
-
-    void visualizePointclouds(MatrixXf pointcloud1, MatrixXf pointcloud2) {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud1_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
-        for (int i = 0; i < pointcloud2.cols(); i++) {
-            pointcloud2(0,i) = pointcloud2(0,i)+2;
-            pointcloud2(1,i) = pointcloud2(1,i)+2;
-            pointcloud2(2,i) = pointcloud2(2,i)+0.5;
-        }
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
-        // Generate pointcloud data
-        pointcloud_pcl->width = pointcloud1.cols()+pointcloud2.cols();
-        pointcloud_pcl->height = 1;
-        pointcloud_pcl->points.resize (pointcloud_pcl->width * pointcloud_pcl->height);
-
-        for (size_t i = 0; i < pointcloud1_pcl->points.size (); ++i) {
-            pointcloud_pcl->points[i].x = pointcloud1(0,i);
-            pointcloud_pcl->points[i].y = pointcloud1(1,i);
-            pointcloud_pcl->points[i].z = pointcloud1(2,i);
-        }
-
-        for (size_t i = 0; i < pointcloud2.cols(); ++i) {
-            pointcloud_pcl->points[i+pointcloud1.cols()].x = pointcloud2(0,i);
-            pointcloud_pcl->points[i+pointcloud1.cols()].y = pointcloud2(1,i);
-            pointcloud_pcl->points[i+pointcloud1.cols()].z = pointcloud2(2,i);
-        }
-
-        pcl::visualization::CloudViewer viewer ("Simple Cloud Viewer");
-        viewer.showCloud (pointcloud_pcl);
-        while (!viewer.wasStopped ()) {}
-    }
-
-    void saveData(MatrixXf pc1, MatrixXf pc2, MatrixXf cp) {
-        savePointcloud(pc1, "/home/sebastian/Desktop/pc1.txt");
-        savePointcloud(pc2, "/home/sebastian/Desktop/pc2.txt");
-        savePointcloud(cp, "/home/sebastian/Desktop/cp.txt");
-    }
 };
+
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "pointcloud_alignment");
