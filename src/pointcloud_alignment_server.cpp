@@ -114,12 +114,17 @@ public:
         VectorXf t_init = t_icp;
         float s_init = 1;
 
-
+        if (goal->command == 2) {
+            cout<<source_pointcloud.cols()<<" "<<target_pointcloud.cols()<<endl;
+            float op = calc_overlapping_percentage(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
+            float ppe = per_point_error(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
+            cout<<"overlapping_percentage: "<<op<<" , per-point-error: "<<ppe<<endl;
+        }
+        else {
         // execute the pointcloud alignment algorithm
         find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
 
-        printDistances(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
-
+        }
         // send result to client
         geometry_msgs::Quaternion orientation;
         geometry_msgs::Point position;
@@ -375,7 +380,7 @@ public:
             }
         }
 
-        cout<<"ICP iterations: "<<itCt<<endl;
+        //cout<<"ICP iterations: "<<itCt<<endl;
         return calc_error(source_subclouds[0], target_pointcloud, R, t, s);
     }
 
@@ -1175,17 +1180,7 @@ public:
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-    void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
+    /*void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
             MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
             apply_transformation(source_cloud, source_proj, R, t , s);
             MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
@@ -1209,7 +1204,7 @@ public:
 
             file.close();
 
-        }
+        }*/
 };
 
 
