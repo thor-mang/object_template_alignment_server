@@ -1,5 +1,8 @@
 #include <ros/ros.h>
 #include <ros/package.h>
+
+#include <dynamic_reconfigure/server.h>
+
 #include <actionlib/server/simple_action_server.h>
 #include <object_template_alignment_server/PointcloudAlignmentAction.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -22,6 +25,7 @@
 #include <pcl/PCLPointCloud2.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+
 #include <pcl/point_types_conversion.h>
 
 #include <pcl/kdtree/kdtree.h>
@@ -68,12 +72,11 @@ protected:
 
 public:
 
-    float DISTANCE_THRESHOLD, DISTANCE_THRESHOLD_FACTOR, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
-          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, DAMPING_COEFFICIENT, DELAY_FACTOR, MAX_RADIUS, LAMBDA;
+    float DISTANCE_THRESHOLD, MIN_OVERLAPPING_PERCENTAGE, TARGET_RADIUS_FACTOR, EVALUATION_THRESHOLD, MIN_PLANE_PORTION, MIN_PLANE_DISTANCE, MIN_SCALING_FACTOR, MAX_SCALING_FACTOR,
+          MAX_TIME, ICP_EPS, ICP_EPS2, MAX_NUMERICAL_ERROR, DAMPING_COEFFICIENT, DELAY_FACTOR, MAX_RADIUS, LAMBDA, MU;
     int NUMBER_SUBCLOUDS, SIZE_SOURCE, SIZE_TARGET, REFINEMENT_ICP_SOURCE_SIZE, REFINEMENT_ICP_TARGET_SIZE, MAX_DEPTH, MAX_ICP_IT, REMOVE_PLANE, MAX_ICP_EVALUATIONS;
 
     pcl::KdTreeFLANN<pcl::PointXYZ> targetKdTree;
-    pcl::KdTreeFLANN<pcl::PointXYZ> sourceKdTree;
 
     PointcloudAlignmentAction(std::string name) :
         as_(nh_, name, boost::bind(&PointcloudAlignmentAction::executeCB, this, _1), false),
@@ -110,35 +113,29 @@ public:
         t_icp << goal->initial_pose.pose.position.x, goal->initial_pose.pose.position.y, goal->initial_pose.pose.position.z;
         float s_icp = 1.;
 
-        MatrixXf R_init = R_icp;
-        VectorXf t_init = t_icp;
+        MatrixXf R_init = copyMatrix(R_icp);
+        VectorXf t_init = copyVector(t_icp);
         float s_init = 1;
 
-        if (goal->command == 2) {
-            cout<<source_pointcloud.cols()<<" "<<target_pointcloud.cols()<<endl;
-            float op = calc_overlapping_percentage(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
-            float ppe = per_point_error(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
-            cout<<"overlapping_percentage: "<<op<<" , per-point-error: "<<ppe<<endl;
-        }
-        else {
+
         // execute the pointcloud alignment algorithm
         find_pointcloud_alignment(goal->command, source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
 
-        }
+
         // send result to client
         geometry_msgs::Quaternion orientation;
         geometry_msgs::Point position;
 
+        if (rotationIsValid(R_icp) == false || R_icp(0,0) + R_icp(1,1) + R_icp(2,2) == 0) {
+            ROS_ERROR("Computed rotation matrix is not valid! Returning initial pose to client.");
+            R_icp = copyMatrix(R_init);
+            t_icp = copyVector(t_init);
+            s_icp = s_init;
+        }
+
         position.x = t_icp(0);
         position.y = t_icp(1);
         position.z = t_icp(2);
-
-        if (rotationIsValid(R_icp) == false || R_icp(0,0) + R_icp(1,1) + R_icp(2,2) == 0) {
-            ROS_ERROR("Computed rotation matrix is not valid! Returning initial pose to client.");
-            R_icp = R_init;
-            t_icp = t_init;
-            s_icp = s_init;
-        }
 
         orientation.w = sqrt(1. + R_icp(0,0) + R_icp(1,1) + R_icp(2,2)) / 2.;
         orientation.x = (R_icp(2,1) - R_icp(1,2)) / (4.*orientation.w);
@@ -159,11 +156,6 @@ public:
     // evaluates the command parameter and calls the local or global point cloud alignment algorithm
     float find_pointcloud_alignment(int command, MatrixXf &source_pointcloud, MatrixXf &target_pointcloud, MatrixXf &R_icp, VectorXf &t_icp, float &s_icp) {
 
-        // set evaluation threshold
-        if (DISTANCE_THRESHOLD_FACTOR > 0) {
-            DISTANCE_THRESHOLD = DISTANCE_THRESHOLD_FACTOR * MAX_RADIUS;
-        }
-
         if (source_pointcloud.cols() == 0 || target_pointcloud.cols() == 0) {
             ROS_ERROR("source or target pointcloud is zero");
             return FLT_MAX;
@@ -177,12 +169,12 @@ public:
             MatrixXf target_subcloud = random_filter(target_pointcloud, REFINEMENT_ICP_TARGET_SIZE);
             createTargetKdTree(target_subcloud);
             float err = local_pointcloud_alignment(source_subclouds, target_subcloud , R_icp, t_icp, s_icp);
-            float al_per = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_icp, t_icp, s_icp);
-            float no_err = normalizedError(source_subclouds[0], target_subcloud , R_icp, t_icp, s_icp);
             return  err;
+
         } else  if (command == 1) { // execute global pointcloud alignment
             ROS_INFO("executing global icp");
             return global_pointcloud_alignment(source_pointcloud, target_pointcloud, R_icp, t_icp, s_icp);
+
         } else { // invalid command
             ROS_ERROR("Received invalid command: %d", command);
             as_.setAborted();
@@ -199,8 +191,8 @@ public:
         int queueLength;
         Cube **Q = initPriorityQueue(queueLength);
 
-        MatrixXf R_init = R;
-        VectorXf t_init = t;
+        MatrixXf R_init = copyMatrix(R);
+        VectorXf t_init = copyVector(t);
         float s_init = s;
 
         int itCt = 0;
@@ -208,7 +200,6 @@ public:
         float cur_percentage = FLT_MIN;
 
         MatrixXf *source_subclouds = subsample_source_cloud(source_pointcloud, SIZE_SOURCE);
-        createSourceKdTree(source_subclouds[0]);
 
         MatrixXf target_subcloud = random_filter(target_pointcloud, SIZE_TARGET);
         createTargetKdTree(target_subcloud);
@@ -226,15 +217,16 @@ public:
             }
 
             MatrixXf R_i = getAARot(Q[i]->r0) * R_init;
-            VectorXf t_i = t_init;
+            VectorXf t_i = copyVector(t_init);
             float s_i = s_init;
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
             float ppe = per_point_error(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
+            float translation_error = (t_i-t_init).norm();
 
-            float quality = eval_quality(percentage, ppe);
+            float quality = eval_quality(percentage, ppe, translation_error);
 
             if (quality < best_quality && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = ppe;
@@ -257,22 +249,23 @@ public:
         s_init = s;
 
         MatrixXf R_sym[3];
-        R_sym[0] = R*getRotationMatrix(M_PI,0,0);
-        R_sym[1] = R*getRotationMatrix(0,M_PI,0);
-        R_sym[2] = R*getRotationMatrix(0,0,M_PI);
+        R_sym[0] = R * getSymmetryRotation(0);
+        R_sym[1] = R * getSymmetryRotation(1);
+        R_sym[2] = R * getSymmetryRotation(2);
 
         #pragma omp parallel for shared(cur_err, R, t, s, i, cur_percentage, itCt)
         for (int i = 0; i < 3; i++) {
             MatrixXf R_i = R_sym[i];
-            VectorXf t_i = t;
+            VectorXf t_i = copyVector(t);
             float s_i = s;
 
             local_pointcloud_alignment(source_subclouds, target_subcloud, R_i, t_i, s_i);
 
             float percentage = calc_overlapping_percentage(source_subclouds[0], target_subcloud, R_i, t_i, s_i);
             float ppe = per_point_error(source_subclouds[0], target_subcloud , R_i, t_i, s_i);
+            float translation_error = (t_i-t_init).norm();
 
-            float quality = eval_quality(percentage, ppe);
+            float quality = eval_quality(percentage, ppe, translation_error);
 
             if (quality < best_quality && rotationIsValid(R_i) && s_i > MIN_SCALING_FACTOR && s_i < MAX_SCALING_FACTOR) {
                 cur_err = ppe;
@@ -312,10 +305,6 @@ public:
 
         ROS_INFO("Executed %d icp iterations, per-point error: %f, aligned percentage: %f.", itCt+1, cur_err, cur_percentage);
         return cur_err;
-    }
-
-    float eval_quality(float percentage, float ppe) {
-        return log(1.-percentage) + LAMBDA*log(ppe);
     }
 
     // the modified ICP algorithm
@@ -380,8 +369,12 @@ public:
             }
         }
 
-        //cout<<"ICP iterations: "<<itCt<<endl;
         return calc_error(source_subclouds[0], target_pointcloud, R, t, s);
+    }
+
+    // quality function
+    float eval_quality(float percentage, float ppe, float translation_error) {
+        return log(1.-percentage) + LAMBDA*log(ppe) + LAMBDA*log(translation_error);
     }
 
     // calculates the percentage of points which distance to their nearest neighbor is smaller than the evaluation threshold
@@ -610,6 +603,347 @@ public:
         return v;
     }
 
+    // returns the passed time since start
+    float getPassedTime(struct timeval start) {
+        struct timeval end;
+        gettimeofday(&end, NULL);
+
+        return (float) (((1.0/1000)*((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec)))/1000.);
+    }
+
+    // returns the Angle-Axis rotation matrix for the given vector
+    MatrixXf getAARot(VectorXf &r) {
+        MatrixXf R = MatrixXf::Identity(3,3);
+
+        if (r.norm() == 0) {
+            return R;
+        }
+
+        MatrixXf r_x(3,3);
+        r_x << 0, -r(2), r(1),
+            r(2), 0, -r(0),
+            -r(1), r(0), 0;
+
+
+        R += (r_x*sin(r.norm()))/(r.norm());
+        R += (r_x*r_x*(1-cos(r.norm())))/(r.norm()*r.norm());
+
+        return R;
+    }
+
+    // creates a new cube with given half_edge length, r0 and depth
+    Cube* createCube(VectorXf r0, float half_edge_length, int depth) {
+        Cube *C = new Cube;
+        C->r0 = r0;
+        C->half_edge_length = half_edge_length;
+        C->depth = depth;
+
+        return C;
+    }
+
+    // compares two cubes and states which of the two cubes has to be searched first (lower depth is better)
+    bool betterThan(Cube *cube1, Cube *cube2) {
+        if (cube1->depth < cube2->depth) {
+            return true;
+        } else if (cube1->depth == cube2->depth && cube1->lower_bound < cube2->lower_bound) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // updates the kdTree with the given point cloud
+    void createTargetKdTree(MatrixXf &pointcloud) {
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr target_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
+
+        // Fill in the cloud data
+        target_pcl_pointcloud->width    = pointcloud.cols();
+        target_pcl_pointcloud->height   = 1;
+        target_pcl_pointcloud->is_dense = false;
+        target_pcl_pointcloud->points.resize(target_pcl_pointcloud->width * target_pcl_pointcloud->height);
+
+        for (int i = 0; i < pointcloud.cols(); i++) {
+            target_pcl_pointcloud->points[i].x = pointcloud(0, i);
+            target_pcl_pointcloud->points[i].y = pointcloud(1, i);
+            target_pcl_pointcloud->points[i].z = pointcloud(2, i);
+        }
+
+        targetKdTree.setInputCloud(target_pcl_pointcloud);
+    }
+
+    // returns a subcloud of the given point cloud with number_points in it by a random sampling procedure
+    MatrixXf random_filter(MatrixXf &pointcloud, int number_points) {
+        if (pointcloud.cols() <= number_points) {
+            return pointcloud;
+        }
+
+        vector<int> indices;
+        for (int i = 0; i < pointcloud.cols(); i++) {
+            indices.push_back(i);
+        }
+        random_shuffle(indices.begin(), indices.end());
+
+        MatrixXf filtered_pointcloud(pointcloud.rows(), number_points);
+
+        for (int i = 0; i < number_points; i++) {
+            filtered_pointcloud(0,i) = pointcloud(0, indices[i]);
+            filtered_pointcloud(1,i) = pointcloud(1, indices[i]);
+            filtered_pointcloud(2,i) = pointcloud(2, indices[i]);
+        }
+
+        return filtered_pointcloud;
+    }
+
+    // preprocesses the source pointcloud: convertes it to a Eigen matrix and calculates the maximum radius between points in the source cloud
+    MatrixXf preprocessSourcePointcloud(sensor_msgs::PointCloud2 source_msg) {
+        boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_source (new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::fromROSMsg(source_msg , *pointcloud_source);
+
+        MatrixXf source_pointcloud = MatrixXf(3,pointcloud_source->size());
+
+        MAX_RADIUS = FLT_MIN;
+
+        for (int i = 0; i < pointcloud_source->size(); i++) {
+            source_pointcloud(0,i) = pointcloud_source->at(i).x;
+            source_pointcloud(1,i) = pointcloud_source->at(i).y;
+            source_pointcloud(2,i) = pointcloud_source->at(i).z;
+
+            float radius = sqrt(pointcloud_source->at(i).x*pointcloud_source->at(i).x +
+                                pointcloud_source->at(i).y*pointcloud_source->at(i).y +
+                                pointcloud_source->at(i).z*pointcloud_source->at(i).z);
+            if (radius > MAX_RADIUS) {
+                MAX_RADIUS = radius;
+            }
+        }
+
+        return source_pointcloud;
+    }
+
+    // preprocesses the target pointcloud: convertes it to a Eigen matrix, discards all points that are too far away from the inital position (depending of the MAX_RADIUS)
+    // and removes the plane if chosen
+    MatrixXf preprocessTargetPointcloud(sensor_msgs::PointCloud2 target_msg, geometry_msgs::PoseStamped initial_pose) {
+        boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_target (new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::fromROSMsg(target_msg, *pointcloud_target);
+
+        MatrixXf target_pointcloud(3, pointcloud_target->size());
+
+        for (int i = 0; i < pointcloud_target->size(); i++) {
+            target_pointcloud(0,i) = pointcloud_target->at(i).x;
+            target_pointcloud(1,i) = pointcloud_target->at(i).y;
+            target_pointcloud(2,i) = pointcloud_target->at(i).z;
+        }
+
+
+        if (REMOVE_PLANE == 1) {
+            ROS_INFO("removing plane");
+            target_pointcloud = removePlane(target_pointcloud);
+        }
+
+        int target_size = 0;
+        for (int i = 0; i < target_pointcloud.cols(); i++) {
+            float distToCenter = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
+                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
+                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
+
+
+            if (distToCenter < TARGET_RADIUS_FACTOR*MAX_RADIUS) {
+                target_size++;
+            }
+        }
+
+        if (target_size == target_pointcloud.cols()) {
+            return target_pointcloud;
+        }
+
+        MatrixXf target_pointcloud_new = MatrixXf(3,target_size);
+
+        int pos = 0;
+        for (int i = 0; i < target_pointcloud.cols(); i++) {
+            float dist = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
+                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
+                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
+
+            if (dist < TARGET_RADIUS_FACTOR*MAX_RADIUS && pos < target_size) {
+                target_pointcloud_new(0,pos) = target_pointcloud(0,i);
+                target_pointcloud_new(1,pos) = target_pointcloud(1,i);
+                target_pointcloud_new(2,pos) = target_pointcloud(2,i);
+
+                pos++;
+            }
+        }
+
+        return target_pointcloud_new;
+    }
+
+    // returns the chosen number of subsamples of the source cloud
+    MatrixXf *subsample_source_cloud(MatrixXf source_pointcloud, float size_source) {
+        MatrixXf *source_subclouds = new MatrixXf[NUMBER_SUBCLOUDS];
+
+        for (int i = 0; i < NUMBER_SUBCLOUDS; i++) {
+            source_subclouds[i] = random_filter(source_pointcloud, size_source);
+        }
+        return source_subclouds;
+    }
+
+    // removes the biggest plane from the given pointcloud
+    MatrixXf removePlane(MatrixXf &pointcloud) {
+          pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pointcloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+          pcl_pointcloud->width  = pointcloud.cols();
+          pcl_pointcloud->height = 1;
+          pcl_pointcloud->points.resize(pcl_pointcloud->width * pcl_pointcloud->height);
+
+
+          for (int i = 0; i < pointcloud.cols(); i++) {
+              pcl_pointcloud->points[i].x = pointcloud(0,i);
+              pcl_pointcloud->points[i].y = pointcloud(1,i);
+              pcl_pointcloud->points[i].z = pointcloud(2,i);
+          }
+
+          pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+          pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+          pcl::SACSegmentation<pcl::PointXYZ> seg;
+
+          seg.setOptimizeCoefficients (true);
+
+          seg.setModelType (pcl::SACMODEL_PLANE);
+          seg.setMethodType (pcl::SAC_RANSAC);
+          seg.setDistanceThreshold (MIN_PLANE_DISTANCE);
+
+          seg.setInputCloud (pcl_pointcloud);
+          seg.segment (*inliers, *coefficients);
+
+          if (inliers->indices.size () == 0) {
+            ROS_ERROR ("Could not estimate a planar model for the given dataset.");
+            return pointcloud;
+          }
+
+          if (inliers->indices.size() < MIN_PLANE_PORTION*((float) pointcloud.cols())) {
+              return pointcloud;
+          }          
+
+          MatrixXf new_pointcloud(3,pointcloud.cols()-inliers->indices.size());
+
+          int pos = 0;
+          for (int i = 0; i < pointcloud.cols(); i++) {
+              float dist = abs(coefficients->values[0]*pointcloud(0,i) +
+                               coefficients->values[1]*pointcloud(1,i) +
+                               coefficients->values[2]*pointcloud(2,i) +
+                               coefficients->values[3]);
+              dist /= sqrt(coefficients->values[0]*coefficients->values[0] +
+                           coefficients->values[1]*coefficients->values[1] +
+                           coefficients->values[2]*coefficients->values[2]);
+
+              if (dist > MIN_PLANE_DISTANCE && pos < new_pointcloud.cols()) {
+                  new_pointcloud(0,pos) = pointcloud(0,i);
+                  new_pointcloud(1,pos) = pointcloud(1,i);
+                  new_pointcloud(2,pos) = pointcloud(2,i);
+
+                  pos++;
+              }
+          }
+
+          return new_pointcloud;
+    }
+
+    // sends feedback to the client
+    void sendFeedback(float percentage, float err) {
+        feedback_.aligned_percentage = percentage;
+        feedback_.normalized_error = err;
+        as_.publishFeedback(feedback_);
+    }
+
+    // states if the given rotation matrix is a valid one
+    bool rotationIsValid(MatrixXf R) {
+        if (abs(R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
+            return false;
+        }
+        return true;
+    }
+
+    // validates all transformation parameters
+    bool parametersValid(MatrixXf R, VectorXf t, float s) {
+        for (int i = 0; i < R.rows(); i++) {
+            for (int j = 0; j < R.cols(); j++) {
+                if (isnormal(R(i,j)) == 0 && R(i,j) != 0) {
+                    return false;
+                }
+            }
+        }
+
+        for (int i = 0; i < t.cols(); i++) {
+            if (isnormal(t(i)) == 0 && t(i) != 0) {
+                return false;
+            }
+        }
+
+        if (isnormal(s) == 0 && s != 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+
+    // states if the time-dependent stop-criterion has been fulfilled
+    bool stopCriterionFulfilled(float passedTime, float overlapping_percentage) {
+        float min_percentage = (float) exp(-DAMPING_COEFFICIENT*(passedTime - DELAY_FACTOR))*100.;
+
+        if (min_percentage < overlapping_percentage) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // copy an Eigen matrix into a new data structure
+    MatrixXf copyMatrix(MatrixXf const &m) {
+        MatrixXf m_new(m.rows(), m.cols());
+
+        for (int i = 0; i < m.rows(); i++) {
+            for (int j = 0; j < m.cols(); j++) {
+                m_new(i,j) = m(i,j);
+            }
+        }
+
+        return m_new;
+    }
+
+    // copy an Eigen vector into a new data structure
+    VectorXf copyVector(VectorXf const &v) {
+        VectorXf v_new(v.rows());
+
+        for (int i = 0; i < v.rows(); i++) {
+            v_new(i) = v(i);
+        }
+
+        return v_new;
+    }
+
+    // returns a rotation matrix that rotates around axis 0==x, 1==y or 2 == z by an angle of pi
+    MatrixXf getSymmetryRotation(int axis) {
+        MatrixXf R(3,3);
+
+        if (axis == 0) {    // x-axis
+            R <<  1, 0, 0,
+                  0, -1, 0,
+                  0, 0, -1;
+        } else if (axis == 1) { // y-axis
+            R <<  -1, 0, 0,
+                  0, 1, 0,
+                  0, 0, -1;
+        } else {    // z-axis
+            R <<  -1, 0, 0,
+                  0, -1, 0,
+                  0, 0, 1;
+        }
+
+        return R;
+    }
+
+    //************* functions for management of the priority queue and the octree ***********
+
     // splits the given cube of the octree into eight subcubes
     Cube **splitCube(Cube *cube) {
         Cube **subcubes = new Cube*[8];
@@ -791,328 +1125,10 @@ public:
         return cube;
     }
 
-    // returns the passed time since start
-    float getPassedTime(struct timeval start) {
-        struct timeval end;
-        gettimeofday(&end, NULL);
-
-        return (float) (((1.0/1000)*((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec)))/1000.);
-    }
-
-    // returns the Angle-Axis rotation matrix for the given vector
-    MatrixXf getAARot(VectorXf &r) {
-        MatrixXf R = MatrixXf::Identity(3,3);
-
-        if (r.norm() == 0) {
-            return R;
-        }
-
-        MatrixXf r_x(3,3);
-        r_x << 0, -r(2), r(1),
-            r(2), 0, -r(0),
-            -r(1), r(0), 0;
-
-
-        R += (r_x*sin(r.norm()))/(r.norm());
-        R += (r_x*r_x*(1-cos(r.norm())))/(r.norm()*r.norm());
-
-        return R;
-    }
-
-    // creates a new cube with given half_edge length, r0 and depth
-    Cube* createCube(VectorXf r0, float half_edge_length, int depth) {
-        Cube *C = new Cube;
-        C->r0 = r0;
-        C->half_edge_length = half_edge_length;
-        C->depth = depth;
-
-        return C;
-    }
-
-    // compares two cubes and states which of the two cubes has to be searched first (lower depth is better)
-    bool betterThan(Cube *cube1, Cube *cube2) {
-        if (cube1->depth < cube2->depth) {
-            return true;
-        } else if (cube1->depth == cube2->depth && cube1->lower_bound < cube2->lower_bound) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    // updates the kdTree with the given point cloud
-    void createTargetKdTree(MatrixXf &pointcloud) {
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr target_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
-
-        // Fill in the cloud data
-        target_pcl_pointcloud->width    = pointcloud.cols();
-        target_pcl_pointcloud->height   = 1;
-        target_pcl_pointcloud->is_dense = false;
-        target_pcl_pointcloud->points.resize(target_pcl_pointcloud->width * target_pcl_pointcloud->height);
-
-        for (int i = 0; i < pointcloud.cols(); i++) {
-            target_pcl_pointcloud->points[i].x = pointcloud(0, i);
-            target_pcl_pointcloud->points[i].y = pointcloud(1, i);
-            target_pcl_pointcloud->points[i].z = pointcloud(2, i);
-        }
-
-        targetKdTree.setInputCloud(target_pcl_pointcloud);
-    }
-
-    void createSourceKdTree(MatrixXf &pointcloud) {
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr source_pcl_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);;
-
-        // Fill in the cloud data
-        source_pcl_pointcloud->width    = pointcloud.cols();
-        source_pcl_pointcloud->height   = 1;
-        source_pcl_pointcloud->is_dense = false;
-        source_pcl_pointcloud->points.resize(source_pcl_pointcloud->width * source_pcl_pointcloud->height);
-
-        for (int i = 0; i < pointcloud.cols(); i++) {
-            source_pcl_pointcloud->points[i].x = pointcloud(0, i);
-            source_pcl_pointcloud->points[i].y = pointcloud(1, i);
-            source_pcl_pointcloud->points[i].z = pointcloud(2, i);
-        }
-
-        sourceKdTree.setInputCloud(source_pcl_pointcloud);
-    }
-
-    // returns a subcloud of the given point cloud with number_points in it by a random sampling procedure
-    MatrixXf random_filter(MatrixXf &pointcloud, int number_points) {
-        if (pointcloud.cols() <= number_points) {
-            return pointcloud;
-        }
-
-        vector<int> indices;
-        for (int i = 0; i < pointcloud.cols(); i++) {
-            indices.push_back(i);
-        }
-        random_shuffle(indices.begin(), indices.end());
-
-        MatrixXf filtered_pointcloud(pointcloud.rows(), number_points);
-
-        for (int i = 0; i < number_points; i++) {
-            filtered_pointcloud(0,i) = pointcloud(0, indices[i]);
-            filtered_pointcloud(1,i) = pointcloud(1, indices[i]);
-            filtered_pointcloud(2,i) = pointcloud(2, indices[i]);
-        }
-
-        return filtered_pointcloud;
-    }
-
-    // returns a Euler rotation matrix for the given parameters
-    MatrixXf getRotationMatrix(float xRot, float yRot, float zRot) {
-        MatrixXf R(3,3);
-
-        R << cos(zRot)*cos(yRot), -sin(zRot)*cos(xRot)+cos(zRot)*sin(yRot)*sin(xRot), sin(zRot)*sin(xRot)+cos(zRot)*sin(yRot)*cos(xRot),
-             sin(zRot)*cos(yRot),  cos(zRot)*cos(xRot)+sin(zRot)*sin(yRot)*sin(xRot),-cos(zRot)*sin(xRot)+sin(zRot)*sin(yRot)*cos(xRot),
-             -sin(yRot),           cos(yRot)*sin(xRot),                               cos(yRot)*cos(xRot);
-
-        return R;
-    }
-
-    // preprocesses the source pointcloud: convertes it to a Eigen matrix and calculates the maximum radius between points in the source cloud
-    MatrixXf preprocessSourcePointcloud(sensor_msgs::PointCloud2 source_msg) {
-        boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_source (new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::fromROSMsg(source_msg , *pointcloud_source);
-
-        MatrixXf source_pointcloud = MatrixXf(3,pointcloud_source->size());
-
-        MAX_RADIUS = FLT_MIN;
-
-        for (int i = 0; i < pointcloud_source->size(); i++) {
-            source_pointcloud(0,i) = pointcloud_source->at(i).x;
-            source_pointcloud(1,i) = pointcloud_source->at(i).y;
-            source_pointcloud(2,i) = pointcloud_source->at(i).z;
-
-            float radius = sqrt(pointcloud_source->at(i).x*pointcloud_source->at(i).x +
-                                pointcloud_source->at(i).y*pointcloud_source->at(i).y +
-                                pointcloud_source->at(i).z*pointcloud_source->at(i).z);
-            if (radius > MAX_RADIUS) {
-                MAX_RADIUS = radius;
-            }
-        }
-
-        return source_pointcloud;
-    }
-
-    // preprocesses the target pointcloud: convertes it to a Eigen matrix, discards all points that are too far away from the inital position (depending of the MAX_RADIUS)
-    // and removes the plane if chosen
-    MatrixXf preprocessTargetPointcloud(sensor_msgs::PointCloud2 target_msg, geometry_msgs::PoseStamped initial_pose) {
-        boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > pointcloud_target (new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::fromROSMsg(target_msg, *pointcloud_target);
-
-        MatrixXf target_pointcloud(3, pointcloud_target->size());
-
-        for (int i = 0; i < pointcloud_target->size(); i++) {
-            target_pointcloud(0,i) = pointcloud_target->at(i).x;
-            target_pointcloud(1,i) = pointcloud_target->at(i).y;
-            target_pointcloud(2,i) = pointcloud_target->at(i).z;
-        }
-
-
-        if (REMOVE_PLANE == 1) {
-            ROS_INFO("removing plane");
-            target_pointcloud = removePlane(target_pointcloud);
-        }
-
-        int target_size = 0;
-        for (int i = 0; i < target_pointcloud.cols(); i++) {
-            float distToCenter = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
-                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
-                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
-
-
-            if (distToCenter < TARGET_RADIUS_FACTOR*MAX_RADIUS) {
-                target_size++;
-            }
-        }
-
-        if (target_size == target_pointcloud.cols()) {
-            return target_pointcloud;
-        }
-
-        MatrixXf target_pointcloud_new = MatrixXf(3,target_size);
-
-        int pos = 0;
-        for (int i = 0; i < target_pointcloud.cols(); i++) {
-            float dist = sqrt(pow(target_pointcloud(0,i) - initial_pose.pose.position.x,2) +
-                              pow(target_pointcloud(1,i) - initial_pose.pose.position.y,2) +
-                              pow(target_pointcloud(2,i) - initial_pose.pose.position.z,2));
-
-            if (dist < TARGET_RADIUS_FACTOR*MAX_RADIUS && pos < target_size) {
-                target_pointcloud_new(0,pos) = target_pointcloud(0,i);
-                target_pointcloud_new(1,pos) = target_pointcloud(1,i);
-                target_pointcloud_new(2,pos) = target_pointcloud(2,i);
-
-                pos++;
-            }
-        }
-
-        return target_pointcloud_new;
-    }
-
-    // returns the chosen number of subsamples of the source cloud
-    MatrixXf *subsample_source_cloud(MatrixXf source_pointcloud, float size_source) {
-        MatrixXf *source_subclouds = new MatrixXf[NUMBER_SUBCLOUDS];
-
-        for (int i = 0; i < NUMBER_SUBCLOUDS; i++) {
-            source_subclouds[i] = random_filter(source_pointcloud, size_source);
-        }
-        return source_subclouds;
-    }
-
-    // removes the biggest plane from the given pointcloud
-    MatrixXf removePlane(MatrixXf &pointcloud) {
-          pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pointcloud(new pcl::PointCloud<pcl::PointXYZ>);
-
-          pcl_pointcloud->width  = pointcloud.cols();
-          pcl_pointcloud->height = 1;
-          pcl_pointcloud->points.resize(pcl_pointcloud->width * pcl_pointcloud->height);
-
-
-          for (int i = 0; i < pointcloud.cols(); i++) {
-              pcl_pointcloud->points[i].x = pointcloud(0,i);
-              pcl_pointcloud->points[i].y = pointcloud(1,i);
-              pcl_pointcloud->points[i].z = pointcloud(2,i);
-          }
-
-          pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
-          pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
-          pcl::SACSegmentation<pcl::PointXYZ> seg;
-
-          seg.setOptimizeCoefficients (true);
-
-          seg.setModelType (pcl::SACMODEL_PLANE);
-          seg.setMethodType (pcl::SAC_RANSAC);
-          seg.setDistanceThreshold (MIN_PLANE_DISTANCE);
-
-          seg.setInputCloud (pcl_pointcloud);
-          seg.segment (*inliers, *coefficients);
-
-          if (inliers->indices.size () == 0) {
-            ROS_ERROR ("Could not estimate a planar model for the given dataset.");
-            return pointcloud;
-          }
-
-          if (inliers->indices.size() < MIN_PLANE_PORTION*((float) pointcloud.cols())) {
-              return pointcloud;
-          }          
-
-          MatrixXf new_pointcloud(3,pointcloud.cols()-inliers->indices.size());
-
-          int pos = 0;
-          for (int i = 0; i < pointcloud.cols(); i++) {
-              float dist = abs(coefficients->values[0]*pointcloud(0,i) +
-                               coefficients->values[1]*pointcloud(1,i) +
-                               coefficients->values[2]*pointcloud(2,i) +
-                               coefficients->values[3]);
-              dist /= sqrt(coefficients->values[0]*coefficients->values[0] +
-                           coefficients->values[1]*coefficients->values[1] +
-                           coefficients->values[2]*coefficients->values[2]);
-
-              if (dist > MIN_PLANE_DISTANCE && pos < new_pointcloud.cols()) {
-                  new_pointcloud(0,pos) = pointcloud(0,i);
-                  new_pointcloud(1,pos) = pointcloud(1,i);
-                  new_pointcloud(2,pos) = pointcloud(2,i);
-
-                  pos++;
-              }
-          }
-
-          return new_pointcloud;
-    }
-
-    // sends feedback to the client
-    void sendFeedback(float percentage, float err) {
-        feedback_.aligned_percentage = percentage;
-        feedback_.normalized_error = err;
-        as_.publishFeedback(feedback_);
-    }
-
-    // calculates the normalized per-point error
-    float normalizedError(MatrixXf source_pointcloud, MatrixXf target_pointcloud, MatrixXf R, VectorXf t, float s) {
-        int n_points = pointsLowerThanThreshold(source_pointcloud, target_pointcloud,R,t,s);
-        float err = calc_error(source_pointcloud, target_pointcloud, R, t, s);
-        return err /= ((float) n_points);
-    }
-
-    // states if the given rotation matrix is a valid one
-    bool rotationIsValid(MatrixXf R) {
-        if (abs(R.determinant()-1) > MAX_NUMERICAL_ERROR || (R*R.transpose() - MatrixXf::Identity(3,3)).norm() > MAX_NUMERICAL_ERROR) {
-            return false;
-        }
-        return true;
-    }
-
-    // validates all transformation parameters
-    bool parametersValid(MatrixXf R, VectorXf t, float s) {
-        for (int i = 0; i < R.rows(); i++) {
-            for (int j = 0; j < R.cols(); j++) {
-                if (isnormal(R(i,j)) == 0 && R(i,j) != 0) {
-                    return false;
-                }
-            }
-        }
-
-        for (int i = 0; i < t.cols(); i++) {
-            if (isnormal(t(i)) == 0 && t(i) != 0) {
-                return false;
-            }
-        }
-
-        if (isnormal(s) == 0 && s != 0) {
-            return false;
-        }
-
-        return true;
-    }
+    //************* parameter initialization functions ****************************
 
     void initializeParameters() {
         DISTANCE_THRESHOLD = getFloatParameter("distance_threshold");
-        DISTANCE_THRESHOLD_FACTOR = getFloatParameter("distance_threshold_factor");
         MIN_OVERLAPPING_PERCENTAGE = getFloatParameter("min_overlapping_percentage");
         TARGET_RADIUS_FACTOR = getFloatParameter("target_radius_factor");
         NUMBER_SUBCLOUDS = getIntegerParameter("number_subclouds");
@@ -1134,7 +1150,8 @@ public:
         DELAY_FACTOR = getFloatParameter("delay_factor");
         REMOVE_PLANE = getIntegerParameter("remove_plane");
         MAX_ICP_EVALUATIONS = getIntegerParameter("max_icp_evaluations");
-        LAMBDA = getIntegerParameter("lambda");
+        LAMBDA = getFloatParameter("lambda");
+        MU = getFloatParameter("mu");
     }
 
     float getFloatParameter(string parameter_name) {
@@ -1168,43 +1185,8 @@ public:
             return 0;
         }
     }
+    // ***********************************************************
 
-    // states if the time-dependent stop-criterion has been fulfilled
-    bool stopCriterionFulfilled(float passedTime, float overlapping_percentage) {
-        float min_percentage = (float) exp(-DAMPING_COEFFICIENT*(passedTime - DELAY_FACTOR))*100.;
-
-        if (min_percentage < overlapping_percentage) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    /*void printDistances(MatrixXf source_cloud, MatrixXf target_cloud, MatrixXf R, VectorXf t, float s) {
-            MatrixXf source_proj(source_cloud.rows(), source_cloud.cols());
-            apply_transformation(source_cloud, source_proj, R, t , s);
-            MatrixXf correspondences(source_cloud.rows(), source_cloud.cols());
-            VectorXf distances(source_cloud.cols());
-
-            if (find_correspondences(source_proj, target_cloud, correspondences, distances) == false) {
-                return;
-            }
-
-
-            ofstream file;
-
-            file.open("/home/sebastian/Desktop/distances.txt");
-            if (!file.is_open()) {
-                cout<<"Fehler beim oeffnen von distances.txt!"<<endl;
-            }
-
-            for (int i = 0; i < distances.rows(); i++) {
-                file << distances(i) << endl;
-            }
-
-            file.close();
-
-        }*/
 };
 
 

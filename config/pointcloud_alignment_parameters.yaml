@@ -1,4 +1,3 @@
-distance_threshold_factor: -0.08
 distance_threshold: 0.03
 evaluation_threshold: 0.02
 min_overlapping_percentage: 0.15
@@ -20,6 +19,7 @@ max_numerical_error: 1.0e-04
 max_percentage: 0.85
 damping_coefficient: 0.5
 delay_factor: 1
-remove_plane: 0
-max_icp_evaluations: 45
+remove_plane: 1
+max_icp_evaluations: 40
 lambda: 1
+mu: 0.01

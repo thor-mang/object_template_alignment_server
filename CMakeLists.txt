@@ -19,6 +19,14 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(Boost REQUIRED COMPONENTS system)
 
 
+#add dynamic reconfigure api
+#find_package(catkin REQUIRED dynamic_reconfigure)
+generate_dynamic_reconfigure_options(
+  cfg/pointcloud_alignment_parameters.cfg)
+
+# make sure configure headers are built before any node using them
+
+
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
 ## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
@@ -149,6 +157,8 @@ endif()
 ## same as for the library above
 # add_dependencies(object_template_alignment_server_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(pointcloud_alignment_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(pointcloud_alignment_server ${PROJECT_NAME}_gencfg)
+
 
 
 ## Specify libraries to link a library or executable target against
